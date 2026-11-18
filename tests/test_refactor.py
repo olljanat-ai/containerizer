@@ -1498,3 +1498,26 @@ def test_window_skips_evidence_without_a_line():
     assert lo <= 500 <= hi and len(part) <= 2000
     part, lo, hi = window(text, [None], 2000)
     assert lo == 1
+
+
+def test_developer_only_files_are_not_changed(tmp_path):
+    """local.settings.json, appsettings.Development.json and launchSettings.json are not read by the container:
+    a finding only there is skipped, and an edit to one is left out."""
+    comps = [{"name": "Fn", "project": "Fn/Fn.csproj", "findings": [
+        {"id": "cfg-sql-integrated", "severity": "config", "title": "t", "fix": "use a secret",
+         "evidence": ["Fn/local.settings.json:35: Trusted_Connection=True",
+                      "Sync/appsettings.development.json:9: Integrated Security=True"]},
+        {"id": "cfg-azure-managed-identity", "severity": "refactor", "title": "t", "fix": "workload identity",
+         "evidence": ["Fn/Program.cs:3: new DefaultAzureCredential()", "Fn/local.settings.json:2: x"]}]}]
+    tasks, skipped = rf.plan_tasks(comps, include_config=True)
+    assert [t["file"] for t in tasks] == ["Fn/Program.cs"]
+    assert any(s["rule"] == "cfg-sql-integrated" and "developer-only" in s["reason"] for s in skipped)
+    (tmp_path / "Fn").mkdir()
+    (tmp_path / "Fn/local.settings.json").write_text('{"a": "Trusted_Connection=True"}\n')
+    (tmp_path / "Fn/Program.cs").write_text("int a = 1;\n")
+    ch, err = rf.apply_answer(tmp_path, {"edits": [
+        {"file": "Fn/local.settings.json", "search": "Trusted_Connection=True", "replace": "Authentication=X"},
+        {"file": "Fn/Program.cs", "search": "int a = 1;", "replace": "int a = 2;"}]},
+        ["Fn/local.settings.json", "Fn/Program.cs"], None)
+    assert not err and [c["file"] for c in ch] == ["Fn/Program.cs"]
+    assert "Trusted_Connection" in (tmp_path / "Fn/local.settings.json").read_text()

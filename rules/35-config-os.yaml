@@ -519,14 +519,14 @@ rules:
     windows_container: true
     title: Listens on a privileged port (below 1024) fixed in code
     why: >-
-      The container runs as a non-root user without capabilities, which cannot bind ports below
-      1024: the app fails at start with "Permission denied". Ports set in code (UseUrls,
-      Kestrel Listen, HttpListener prefixes) or in a "urls" setting also override
-      ASPNETCORE_HTTP_PORTS, so the generated port 8080 is ignored.
+      Ports set in code (UseUrls, Kestrel Listen, HttpListener prefixes) or in a "urls" setting override
+      ASPNETCORE_HTTP_PORTS, so the container listens there and not on the generated 8080. Port 80 itself
+      works: containerd 2.x and Docker let a non-root process bind ports below 1024, so for plain HTTP on 80
+      the generated container listens on 80 (plan-code-port) and the code stays as it is.
     fix: >-
-      Make the port configurable (drop the hard-coded UseUrls / Listen, or read it from
-      configuration) and listen on 8080 behind the Service; or allow it with the pod sysctl
-      net.ipv4.ip_unprivileged_port_start=0.
+      Nothing for HTTP on port 80 (the container listens there). HTTPS on 443 in the container needs a
+      certificate: let the ingress terminate TLS and listen on HTTP (read the URL from configuration). A
+      TcpListener on another protocol port keeps it: add that port to the container and the Service.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/core/compatibility/containers/8.0/aspnet-port
 
@@ -706,12 +706,17 @@ rules:
     windows_container: true
     title: Uses Azure managed identity / developer credentials
     why: >-
-      DefaultAzureCredential falls back to VM managed identity or developer logins; in a pod none
-      of these exist unless workload identity is configured, so token requests fail at runtime.
-      "Active Directory Integrated" SQL auth needs a domain (Kerberos) logon.
+      In a pod there is no VM managed identity or developer login, so token requests fail at
+      runtime unless workload identity is configured. "Active Directory Integrated" SQL auth needs
+      a domain (Kerberos) logon.
     fix: >-
-      Enable AKS workload identity (annotated service account, azure.workload.identity/use
-      label) or use WorkloadIdentityCredential; outside Azure, a service principal from a Secret.
+      Enable AKS workload identity (annotated service account, azure.workload.identity/use pod
+      label); outside Azure, a service principal from a Secret (AZURE_CLIENT_ID, AZURE_TENANT_ID,
+      AZURE_CLIENT_SECRET). Keep DefaultAzureCredential in the code: it already includes
+      WorkloadIdentityCredential and EnvironmentCredential (Azure.Identity 1.9+), so replacing it
+      only breaks local development. Change code only for ManagedIdentityCredential,
+      VisualStudioCredential, AzureCliCredential or AzureServiceTokenProvider, and then to
+      DefaultAzureCredential.
     refs:
       - https://learn.microsoft.com/en-us/dotnet/azure/sdk/authentication/credential-chains
       - https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview

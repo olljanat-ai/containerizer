@@ -8,6 +8,24 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.11 (2026-11-18)
+
+- **Port 80 fixed in code stays as it is**: containerd 2.x (AKS on Azure Linux, K3s) and Docker let a non-root
+  process bind ports below 1024. A web component that listens on HTTP port 80 in code (`UseUrls`, Kestrel `Listen`,
+  `HttpListener` prefixes) or in a `urls` setting now gets a container that listens on 80 (platform technique
+  `plan-code-port`, with `NET_BIND_SERVICE` for older runtimes) instead of a code change to 8080. HTTPS on 443 and
+  `TcpListener` ports stay findings. The IIS replatforming note asking to move to 8080 is gone.
+- **Developer-only files are not changed**: refactoring left `local.settings.json`, `appsettings.Development.json`
+  and `launchSettings.json` alone in name only: an LLM could rewrite their LocalDB connection strings (for example
+  `Trusted_Connection` to `Authentication=ActiveDirectoryManagedIdentity`, or an empty `User ID=;Password=`),
+  which only breaks the developer's machine. The container never reads them (the lab SQL Server comes from the
+  generated `ConnectionStrings__<Name>` settings), so a finding found only there is skipped and an edit to one is
+  left out.
+- **`DefaultAzureCredential` is kept**: the rule `cfg-azure-managed-identity` suggested `WorkloadIdentityCredential`,
+  and refactoring replaced `DefaultAzureCredential` with it. `DefaultAzureCredential` already includes workload
+  identity (Azure.Identity 1.9+); the fix is the workload identity configuration, and code changes only for
+  `ManagedIdentityCredential`, developer credentials or `AzureServiceTokenProvider`.
+
 ## 0.51.10 (2026-11-18)
 
 - **Repositories the scan's token may not read are skipped and hidden**: a project or repository with permissions of

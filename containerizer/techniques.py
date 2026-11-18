@@ -161,7 +161,45 @@ def technique_special_folder_workdir(repo, c, findings) -> dict | None:
             "_note": "Folders mounted: " + ", ".join(mounts) + "."}
 
 
+# ------------------------------------------------------------------ a port fixed in code
+
+# the ports a cfg-privileged-port finding names: UseUrls/WebApp.Start("http://*:80"), Listen(..., 80),
+# HttpListener prefixes (no port: 80), "urls" settings
+_PORT_URL = re.compile(r"(?P<scheme>https?)://[^\"/;\s]*?(?::(?P<port>\d{1,5}))?(?=[\"/;\s])")
+_PORT_LISTEN = re.compile(r"\.Listen(?:Any|Localhost)?IP\w*\(\s*(?:IPAddress\.\w+\s*,\s*)?(?P<port>\d{1,5})\s*[,)]|"
+                          r"\.Listen\(\s*IPAddress\.\w+\s*,\s*(?P<port2>\d{1,5})\s*[,)]")
+
+
+def code_ports(texts: list[str]) -> set[str]:
+    """The listening addresses in the evidence lines, as "http:80" / "https:443" / "listen:80" (or "other")."""
+    out = set()
+    for t in texts:
+        if re.search(r"TcpListener", t):
+            out.add("other")
+            continue
+        for m in _PORT_LISTEN.finditer(t):
+            out.add("listen:" + (m["port"] or m["port2"]))
+        if not re.search(r"\.Listen", t):
+            for m in _PORT_URL.finditer(t):
+                out.add(f"{m['scheme']}:{m['port'] or ('443' if m['scheme'] == 'https' else '80')}")
+    return out or {"other"}
+
+
+def technique_code_port(repo, c, findings) -> dict | None:
+    """A web component that listens on port 80 fixed in code or in a "urls" setting: the container listens there
+    too (containerd 2.x and Docker let a non-root process bind ports below 1024: net.ipv4.ip_unprivileged_port_start
+    is 0 in the pod; the hardening adds NET_BIND_SERVICE for older runtimes). HTTPS on 443 needs a certificate,
+    and a TcpListener is not the web port: those stay findings."""
+    if c.role != "web":
+        return None
+    ports = code_ports([str(getattr(e, "snippet", "") or "") for f in findings for e in f.evidence])
+    if ports - {"http:80", "listen:80"}:
+        return None
+    return {"port": 80, "_note": "The container listens on port 80, where the code does."}
+
+
 TECHNIQUES = {
+    "code-port": technique_code_port,
     "machine-hostname": technique_machine_hostname,
     "x509-user-store": technique_x509_user_store,
     "special-folder-workdir": technique_special_folder_workdir,

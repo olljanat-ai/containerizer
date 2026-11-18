@@ -126,3 +126,23 @@ def test_audit_table_lists_every_refactor_rule():
     # the techniques' own findings are marked done
     for rid in ("os-machine-name-switch", "os-special-folder-windows"):
         assert next(line for line in doc.splitlines() if line.startswith(f"| `{rid}`")).count("| platform |") == 1
+
+
+def test_port_80_in_code_is_where_the_container_listens(tmp_path):
+    """containerd 2.x lets a non-root process bind port 80: the code keeps it, the container listens there."""
+    from containerizer.assess import assess as _assess
+    from containerizer.generate import make_plan
+    web_app(tmp_path, '''
+        class H { void C(IWebHostBuilder b) => b.UseUrls("http://*:80"); }''')
+    a = _assess(tmp_path)
+    f = {x.rule.id: x for x in a.components[0].findings}["cfg-privileged-port"]
+    assert f.resolved_by == "plan-code-port"
+    assert "generated configuration" in skip_reason(f.to_dict())
+    plan = make_plan(a, a.components[0])
+    assert plan["port"] == 80 and "plan-code-port" in plan["applied"]
+
+
+def test_https_443_in_code_stays_a_finding(tmp_path):
+    web_app(tmp_path, '''
+        class H { void C(IWebHostBuilder b) => b.UseUrls("https://*:443"); }''')
+    assert not _found(tmp_path)["cfg-privileged-port"].resolved_by
