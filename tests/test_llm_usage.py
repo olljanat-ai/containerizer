@@ -120,6 +120,21 @@ def test_usage_rows_and_the_views_grafana_reads():
             d = c.fetchall()
             assert len(d) == 1 and d[0]["Calls"] == 2 and d[0]["InputTokens"] == 1500 and d[0]["OutputTokens"] == 250
             assert d[0]["Day"] == datetime.now(timezone.utc).date()
+            # every query of the dashboard runs as the usage role (Grafana's macros and variables filled in)
+            import json as _json
+            from containerizer.sysagent import GRAFANA_DASHBOARD
+            dash = _json.loads(GRAFANA_DASHBOARD.read_text())
+            sqls = [t["rawSql"] for p in dash["panels"] for t in p.get("targets") or [] if t.get("rawSql")]
+            sqls += [v["query"] for v in dash.get("templating", {}).get("list", []) if isinstance(v.get("query"), str)]
+            assert any("GROUP BY Model, Backend" in q for q in sqls)
+            for q in sqls:
+                q = re.sub(r"\$__timeFilter\((\w+)\)", r"\1 >= '2000-01-01'", q)
+                q = re.sub(r"\b(\w+) IN \(\$\w+\)", r"\1 IS NOT NULL", q).replace("containerizer.", "cz.")
+                t = g.cursor()                                # stat panels have columns without names
+                t.execute(q)
+                t.fetchall()
+            c.execute("SELECT Model, Backend, COUNT(*) AS Calls FROM cz.vLlmUsage GROUP BY Model, Backend")
+            assert [(r["Model"], r["Calls"]) for r in c.fetchall()] == [("m", 4)]
             with pytest.raises(Exception):
                 c.execute("SELECT TOP 1 * FROM cz.Application")         # nothing but the usage views
         finally:

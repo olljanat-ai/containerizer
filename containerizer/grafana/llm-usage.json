@@ -8,7 +8,7 @@
   "description": "Tokens the LLMs reported in their answers, per business unit, product, application and component (the results database: cz.vLlmUsage, kept for the long run).",
   "editable": false,
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "timezone": "utc",
   "graphTooltip": 1,
   "time": {
@@ -768,6 +768,144 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Cost per day by model (USD)",
+      "id": 14,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "CostUsd as recorded when each answer came: Claude's list prices, or CONTAINERIZER_LLM_PRICE_INPUT / _OUTPUT for other LLMs (0 while no price was set).",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT CAST(Day AS datetime2) AS time, Model AS metric, SUM(CostUsd) AS value FROM containerizer.vLlmUsageDaily WHERE $__timeFilter(Day) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY Day, Model ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
+            "lineWidth": 1,
+            "barAlignment": 0
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum"
+          ],
+          "sortBy": "Total",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "table",
+      "title": "By model",
+      "id": 15,
+      "datasource": {
+        "type": "mssql",
+        "uid": "containerizer-sql"
+      },
+      "description": "Per LLM: answered calls, tokens, cost, time spent waiting for the answers and the output speed (output tokens per second of answer time).",
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 40
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "mssql",
+            "uid": "containerizer-sql"
+          },
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT Model, Backend, COUNT(*) AS Calls, SUM(CAST(InputTokens AS bigint)) AS [Input Tokens], SUM(CAST(OutputTokens AS bigint)) AS [Output Tokens], SUM(CAST(Tokens AS bigint)) AS [Total Tokens], SUM(CostUsd) AS [Cost (USD)], CAST(SUM(Seconds) / 3600.0 AS decimal(12, 1)) AS [Answer time (h)], CAST(AVG(Seconds) AS decimal(9, 1)) AS [Seconds per call], CAST(SUM(CAST(OutputTokens AS bigint)) / NULLIF(SUM(Seconds), 0) AS decimal(9, 1)) AS [Output tokens/s], SUM(CASE WHEN CostKnown = 0 THEN 1 ELSE 0 END) AS [Calls without a price] FROM containerizer.vLlmUsage WHERE $__timeFilter(At) AND BusinessUnitName IN ($bu) AND ProductName IN ($product) AND ApplicationName IN ($app) GROUP BY Model, Backend ORDER BY [Total Tokens] DESC"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*Tokens"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cost (USD)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
       "type": "table",
       "title": "By application",
       "id": 12,
@@ -780,7 +918,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 40
+        "y": 49
       },
       "targets": [
         {
@@ -857,7 +995,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 50
+        "y": 59
       },
       "targets": [
         {

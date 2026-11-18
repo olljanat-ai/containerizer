@@ -316,6 +316,16 @@ each with **End now**. Applications that already had an order waiting are not tu
 To see where many Make it A orders fail, export their outcome as JSON: see
 [Database tasks from the shell](appliance-admin.md#database-tasks-from-the-shell).
 
+**Measuring Make it A.** **Readiness over time** (Trends) has the switch **With working Make it A patches**. An
+application whose latest scan has a patch that builds, runs and rates A, made for the scanned commit, counts as
+A from the day the patch finished, without obstacles. The tile **A only with a Make it A patch** and the dashed
+part of each A column are those applications, and their cells in the history per application have a dashed
+border. Compare it with **Code in the repositories** to see what Make it A achieves before the patches are
+merged. A patch for older code no longer counts once the application is scanned again.
+
+![Readiness over time with working Make it A patches: the A only with a patch dashed in each column](images/results-trends-patches.png#only-light){ .cz-shot }
+![Readiness over time with working Make it A patches: the A only with a patch dashed in each column](images/results-trends-patches-dark.png#only-dark){ .cz-shot }
+
 ## The sandbox variant
 
 A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox in place of the
