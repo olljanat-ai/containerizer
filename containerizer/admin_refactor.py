@@ -826,11 +826,19 @@ def bulk_plan(adm, conn) -> dict:
               "AND Status IN (N'approval', N'queued', N'running') AND ApplicationId IS NOT NULL GROUP BY ApplicationId")}
     from .webui import load_a_patches
     patched = load_a_patches(conn)          # a verified patch makes it A already: not ordered again from here
+    tried = {}                              # applications with a finished Make it A order (filter: never tried)
+    try:
+        tried = {int(r["ApplicationId"]): r for r in _rows(
+            conn, "SELECT ApplicationId, MAX(JobId) AS JobId, COUNT(*) AS Tries FROM cz.vRefactorOrder "
+                  "WHERE Status IN (N'verified', N'applies-only', N'failed') AND Goal = N'rating-a' "
+                  "AND ApplicationId IS NOT NULL GROUP BY ApplicationId")}
+    except Exception:  # noqa: BLE001 - before schema 23 there are no orders to count
+        conn.rollback()
     items = []
     for app in apps:
         payload, code = make_payload(adm, conn, app, "rating-a")
         item = {"app": app, "payload": payload, "code": code, "active": active.get(int(app["ApplicationId"])),
-                "patched": patched.get(app["ApplicationId"])}
+                "patched": patched.get(app["ApplicationId"]), "tried": tried.get(int(app["ApplicationId"]))}
         if payload is not None:
             item["job"] = {"Kind": rf.KIND, "InputChars": rf.order_chars(payload), "Model": None}
             item["est"] = speed.job(item["job"])
@@ -845,11 +853,12 @@ def bulk_plan(adm, conn) -> dict:
             else None}
 
 
-def under(plan: dict, limit: int | None) -> list[dict]:
+def under(plan: dict, limit: int | None, untried: bool = False) -> list[dict]:
     """The orders to queue: orderable, none in the queue already, no verified patch that makes it A yet, and
-    estimated under `limit` tokens (None: all)."""
+    estimated under `limit` tokens (None: all); with `untried`, only applications without a finished Make it A
+    order (failed, or a patch that does not build or run) either."""
     return [x for x in plan["items"] if x["payload"] is not None and not x["active"] and not x.get("patched")
-            and (limit is None or x["tokens"] < limit)]
+            and not (untried and x.get("tried")) and (limit is None or x["tokens"] < limit)]
 
 
 SKIP_TEXT = {"no-commit": "the assessment recorded no commit", "no-source": "its source is not kept on this machine",
@@ -863,6 +872,7 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
     plan = bulk_plan(adm, conn)
     raw = ((q or {}).get("limit") or [""])[0]
     limit = int(raw) if re.fullmatch(r"\d{1,9}", raw or "") else LIMIT_DEFAULT
+    untried = ((q or {}).get("untried") or [""])[0] == "1"
     rows, run_jobs = [], []
     for x in plan["items"]:
         app = x["app"]
@@ -880,16 +890,26 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
         elif x.get("patched"):
             state = (f"made A by <a href='{BASE}/{int(x['patched']['JobId'])}'>a patch</a> "
                      f"<span class='muted'>(not queued from here: order it on its page to make a new one)</span>")
+        elif untried and x.get("tried"):
+            t = x["tried"]
+            state = (f"tried {int(t['Tries'])} time(s), last <a href='{BASE}/{int(t['JobId'])}'>#{int(t['JobId'])}</a> "
+                     f"<span class='muted'>(left out: only applications not tried yet)</span>")
         else:
             run_jobs.append(x["job"])
             cum = plan["speed"].queue(run_jobs, plan["parallel"])
-            state = (f"<span class='muted'>up to here: {e(est_text(cum))}</span>")
-        mark = " class='under'" if not x["active"] and not x.get("patched") and x["tokens"] < limit else ""
+            t = x.get("tried")
+            state = (f"<span class='muted'>up to here: {e(est_text(cum))}</span>"
+                     + (f" <span class='muted small'>(tried {int(t['Tries'])} time(s), last "
+                        f"<a href='{BASE}/{int(t['JobId'])}'>#{int(t['JobId'])}</a>)</span>" if t else ""))
+        mark = (" class='under'" if not x["active"] and not x.get("patched") and not (untried and x.get("tried"))
+                and x["tokens"] < limit else "")
         rows.append(f"<tr{mark}><td>{name}</td><td class='small'>{e(what)}</td>"
                     f"<td class='num nowrap'>{x['tokens']:,}</td><td class='small nowrap'>{e(est_text(x['est']))}</td>"
                     f"<td class='small'>{state}</td></tr>")
-    sel = under(plan, limit)
-    all_ = under(plan, None)
+    sel = under(plan, limit, untried)
+    all_ = under(plan, None, untried)
+    n_tried = sum(1 for x in plan["items"] if x.get("tried") and x["payload"] is not None and not x["active"]
+                  and not x.get("patched"))
     sel_tot = plan["speed"].queue([x["job"] for x in sel], plan["parallel"]) if sel else None
     total = plan["total"]
     tot = (f"<p><b>{len(all_)} order(s)</b> can be queued: {e(est_text(plan['speed'].queue([x['job'] for x in all_], plan['parallel'])))} "
@@ -899,17 +919,24 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
             "<p>No B-rated application can be ordered.</p>"))
     pick = (f"<form method='get' action='{BASE}/make-all-a' class='formrow'><label for='limit'>Orders under</label>"
             f"<input id='limit' name='limit' type='number' min='1' max='100000000' value='{limit}'>"
-            f"<span>tokens each</span><button class='secondary'>Show</button></form>")
+            f"<span>tokens each</span><label class='check'><input type='checkbox' name='untried' value='1'"
+            f"{' checked' if untried else ''}> Only applications not tried yet</label>"
+            f"<button class='secondary'>Show</button></form>"
+            + (f"<p class='muted small'>{n_tried} of them had a Make it A order before that did not make them A (it "
+               f"failed, or its patch does not build or run): "
+               + ("left out." if untried else "ordered again unless you tick <b>Only applications not tried yet</b>.")
+               + "</p>" if n_tried else ""))
     from .admin_heavy import hours_options
     form = (f"<form method='post' action='{BASE}/make-all-a'>{adm._csrf(s)}"
             f"<input type='hidden' name='Limit' value='{limit}'>"
+            + ("<input type='hidden' name='Untried' value='1'>" if untried else "") +
             f"<div class='formrow'><label class='check'><input type='checkbox' name='Heavy' value='1'> Also LLM-heavy "
             f"mode for these applications, for</label><select name='Hours' aria-label='How long LLM-heavy'>"
             f"{hours_options()}</select></div><p class='muted small'>LLM-heavy mode puts their orders, and the LLM jobs "
             f"that follow (egress and link reviews), before every other job in the LLM queue, approved, and their "
             f"scans review each of their components (<a href='/admin/llm-queue'>LLM queue</a> lists the windows, "
             f"with End now).</p><div class='formrow'>"
-            f"<button>Queue {len(sel)} order(s) under {limit:,} tokens, approved</button>"
+            f"<button>Queue {len(sel)} order(s) under {limit:,} tokens{', not tried yet' if untried else ''}, approved</button>"
             f"<span class='muted small'>{e(est_text(sel_tot))}</span></div></form>"
             if sel else
             f"<p class='muted'>No order is estimated under {limit:,} tokens.</p>" if all_ else "")
@@ -932,7 +959,7 @@ def make_all_a_post(adm, conn, s, a, form: dict | None = None) -> Response:
     raw = ((form or {}).get("Limit") or [""])[0]
     limit = int(raw) if re.fullmatch(r"\d{1,9}", raw or "") else None
     plan = bulk_plan(adm, conn)
-    chosen = under(plan, limit)
+    chosen = under(plan, limit, ((form or {}).get("Untried") or [""])[0] == "1")
     from .admin_heavy import open_window, parse_hours
     hours = parse_hours(((form or {}).get("Hours") or [""])[0]) if ((form or {}).get("Heavy") or [""])[0] == "1" else None
     queued = exists = heavy = 0

@@ -1164,6 +1164,19 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
     b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
     assert "made A by <a href='/admin/refactoring/77'>a patch</a>" in b and "<b>1 order(s)</b> can be queued" in b
     assert b.index(">Big<") < b.index(">Shop<") and "Queue 1 order(s) under 99,999,999 tokens" in b
+    # applications tried before: ordered again, unless only the ones not tried yet are asked for
+    adm.conn.answers[r"FROM cz.vRefactorOrder\s+WHERE Goal = N'rating-a'"] = []
+    adm.conn.answers[r"FROM cz.vRefactorOrder WHERE Status IN"] = [{"ApplicationId": 9, "JobId": 55, "Tries": 2}]
+    b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
+    assert "<b>2 order(s)</b> can be queued" in b and "(tried 2 time(s), last <a href='/admin/refactoring/55'>#55</a>)" in b
+    assert "1 of them had a Make it A order before" in b and "name='untried' value='1'>" in b
+    b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999&untried=1").body
+    assert "<b>1 order(s)</b> can be queued" in b and "left out: only applications not tried yet" in b
+    assert "name='Untried' value='1'" in b and "Queue 1 order(s) under 99,999,999 tokens, not tried yet" in b
+    adm.conn.log.clear()
+    _post(adm, ad, "/admin/refactoring/make-all-a", Limit="99999999", Untried="1")
+    (sql, params), = adm.conn.sql("EXEC cz.QueueLlmJob")
+    assert json.loads(params[-1])["application_id"] == 7                            # Big (9) was tried: left out
 
 
 # --------------------------------------------------------------------------- SQL Server
