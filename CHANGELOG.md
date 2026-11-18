@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.14 (2026-11-18)
+
+- **Make it A: every B application, only the ones not tried yet**: applications whose earlier Make it A order did
+  not make them A (it failed, or its patch does not build or run) say how often they were tried, with a link to the
+  last order. The new **Only applications not tried yet** leaves them out of the list's selection and of **Queue**.
+  Applications with an order in the queue were left out already, and still are.
+
 ## 0.51.13 (2026-11-18)
 
 - **Readiness over time with working Make it A patches**: the trends page has the switch **With working Make it A

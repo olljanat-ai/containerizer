@@ -303,6 +303,14 @@ of tokens each (20,000 to begin with) marks the ones that fit, and **Queue … a
 them, approved by you at once: they do not wait for approval, whatever the LLM queue's approval policy says, and
 run by the queue's settings (hours, idle, parallel requests). Nothing is queued by opening the page.
 
+Applications that had a Make it A order before that did not make them A (it failed, or its patch does not build or
+run) are ordered again and say how often they were tried, with a link to the last order. Tick **Only applications
+not tried yet** and **Show** to leave them out, so the queue goes to applications Make it A has not seen; the
+**Queue** button then orders only those.
+
+![Make it A: every B application, only the applications not tried yet](images/admin-make-all-a-untried.png#only-light){ .cz-shot }
+![Make it A: every B application, only the applications not tried yet](images/admin-make-all-a-untried-dark.png#only-dark){ .cz-shot }
+
 Tick **Also LLM-heavy mode for these applications, for** (8 hours to begin with, up to 7 days) to turn
 [LLM-heavy mode](source-control.md#llm-heavy-for-a-while) on for each application ordered, with the same button:
 until the window ends, their orders and the LLM jobs that follow (egress and link reviews) go before every other job
