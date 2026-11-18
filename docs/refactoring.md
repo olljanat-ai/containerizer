@@ -312,6 +312,10 @@ each with **End now**. Applications that already had an order waiting are not tu
 ![Make it A: every B application, with the LLM-heavy option above the Queue button](images/admin-make-all-a-heavy.png#only-light){ .cz-shot }
 ![Make it A: every B application, with the LLM-heavy option above the Queue button](images/admin-make-all-a-heavy-dark.png#only-dark){ .cz-shot }
 
+
+To see where many Make it A orders fail, export their outcome as JSON: see
+[Database tasks from the shell](appliance-admin.md#database-tasks-from-the-shell).
+
 ## The sandbox variant
 
 A Make it A order whose patched copy rates A and is verified is **deployed to the sandbox in place of the

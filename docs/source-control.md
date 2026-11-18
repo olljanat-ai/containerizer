@@ -314,7 +314,8 @@ Until it ends:
 
 **Scan its repository now** (ticked by default) starts a scan of its repository at once, so the reviews are
 queued without waiting for the schedule. The windows open now are listed on the application's page and on the
-LLM queue page (**LLM-heavy now**), each with **End now**; their jobs then take their usual place again.
+LLM queue page (**LLM-heavy now**), each with **End now**; their jobs then take their usual place again. To end every window at once, see
+[Database tasks from the shell](appliance-admin.md#database-tasks-from-the-shell).
 Turning a window on or ending it is in the audit log.
 
 ![The LLM queue with two LLM-heavy windows: their jobs first, each marked LLM-heavy until its end](images/admin-llm-queue-heavy.png#only-light){ .cz-shot }
