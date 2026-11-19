@@ -181,6 +181,28 @@ def test_egress_status_parses_journal(paths):
     assert [r["host"] for r in st["system_rules"]] == ["ghcr.io", "pkg-containers.githubusercontent.com"]
 
 
+def test_dns_cache_never_outlives_the_firewall_sets(paths, monkeypatch):
+    """dnsmasq fills the sets only from upstream answers: its cache is short, and emptied with the sets."""
+    r = fake_run(monkeypatch)
+    hup = ["systemctl", "kill", "--kill-whom=main", "-s", "SIGHUP", "containerizer-dns.service"]
+    restart = ["systemctl", "try-restart", "containerizer-dns.service"]
+    sysagent.save_rules({"rules": [{"host": "api.nuget.org"}]}, "alice@x", "Alice")
+    assert "max-cache-ttl=10" in paths.dnsmasq.read_text().splitlines()
+    assert restart in r.calls and hup not in r.calls            # a restart starts with an empty cache
+    r.calls.clear()
+    sysagent.apply_firewall(reload_dns=False)                   # the sets are emptied all the same
+    assert hup in r.calls and restart not in r.calls
+    assert r.calls.index(["nft", "-f", str(paths.nft)]) < r.calls.index(hup)
+    # an app update does not render the filter: the status job does when the file predates the setting
+    r.calls.clear()
+    assert not sysagent.dns_filter_sync() and not r.calls
+    paths.dnsmasq.write_text(paths.dnsmasq.read_text().replace("max-cache-ttl=10\n", ""))
+    assert sysagent.dns_filter_sync() and restart in r.calls
+    assert "max-cache-ttl=10" in paths.dnsmasq.read_text().splitlines()
+    paths.dnsmasq.unlink()
+    assert not sysagent.dns_filter_sync()                       # never rendered: not this job's to do
+
+
 def test_save_rules_applies_and_records_history(paths, monkeypatch):
     r = fake_run(monkeypatch)
     sysagent.save_rules({"rules": [{"host": "api.nuget.org"}]}, "alice@x", "Alice")
