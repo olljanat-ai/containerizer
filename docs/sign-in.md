@@ -153,6 +153,12 @@ that keeps its own data (it runs with a persistent volume, one replica: see
 italics with the others and the filter finds it, but the editor neither shows nor stores it: nobody can add or
 remove it, and it goes away when a scan no longer finds such data. The API returns people's tags only.
 
+**Products and business units** have tags too, with the same rules: the **Tags** field on a product's or a
+business unit's page (Admin → Products, Admin → Business units), set by whoever may edit it. Those two lists
+show the tags in use above the table, with how many have each, and a tag there (or next to a name) shows only
+the ones with it (`/admin/products?tag=wave+1`); **Any** clears it. These tags are for the admin lists: the
+front page filters by the applications' own tags.
+
 Everyone who can read the results filters the front page by them: the **Tags** row under the business units
 lists the tags of the applications shown, with how many have each. A tag, on that row or next to an
 application's name, shows only the applications with it, and the tiles, bars and groups count only those;

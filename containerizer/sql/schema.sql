@@ -3523,3 +3523,52 @@ GRANT SELECT ON [${schema}].ComponentVerifyLog TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 61) INSERT [${schema}].SchemaVersion (Version) VALUES (61);
 GO
+
+-- 62: tags of products and business units (tags.py: comma-separated, as Application.Tags), set by people on
+-- Admin -> Products / Business units, which filter their lists by them. The change history records them.
+IF COL_LENGTH(N'[${schema}].Product', N'Tags') IS NULL
+    ALTER TABLE [${schema}].Product ADD Tags nvarchar(800) NULL;
+GO
+IF COL_LENGTH(N'[${schema}].BusinessUnit', N'Tags') IS NULL
+    ALTER TABLE [${schema}].BusinessUnit ADD Tags nvarchar(800) NULL;
+GO
+-- (with Tags: 62)
+CREATE OR ALTER TRIGGER [${schema}].trBusinessUnitAudit ON [${schema}].BusinessUnit
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'BusinessUnit', COALESCE(i.BusinessUnitId, d.BusinessUnitId),
+           COALESCE(i.Name, d.Name),
+           CASE WHEN d.BusinessUnitId IS NULL THEN N'insert' WHEN i.BusinessUnitId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.BusinessUnitId IS NOT NULL THEN (SELECT d.Name, d.Description, d.Owner, d.Tags FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.BusinessUnitId IS NOT NULL THEN (SELECT i.Name, i.Description, i.Owner, i.Tags FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.BusinessUnitId = i.BusinessUnitId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.BusinessUnitId IS NULL OR i.BusinessUnitId IS NULL
+       OR EXISTS (SELECT i.Name, i.Description, i.Owner, i.Tags EXCEPT SELECT d.Name, d.Description, d.Owner, d.Tags);
+END;
+GO
+-- (with Tags: 62)
+CREATE OR ALTER TRIGGER [${schema}].trProductAudit ON [${schema}].Product
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Product', COALESCE(i.ProductId, d.ProductId), COALESCE(i.Name, d.Name),
+           CASE WHEN d.ProductId IS NULL THEN N'insert' WHEN i.ProductId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ProductId IS NOT NULL THEN (SELECT d.Name, d.Description, d.Owner, d.InfoUrl, d.ExternalId, d.Tags,
+                (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = d.BusinessUnitId) AS BusinessUnit
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ProductId IS NOT NULL THEN (SELECT i.Name, i.Description, i.Owner, i.InfoUrl, i.ExternalId, i.Tags,
+                (SELECT b.Name FROM [${schema}].BusinessUnit b WHERE b.BusinessUnitId = i.BusinessUnitId) AS BusinessUnit
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ProductId = i.ProductId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ProductId IS NULL OR i.ProductId IS NULL
+       OR EXISTS (SELECT i.Name, i.Description, i.Owner, i.InfoUrl, i.BusinessUnitId, i.ExternalId, i.Tags
+                  EXCEPT SELECT d.Name, d.Description, d.Owner, d.InfoUrl, d.BusinessUnitId, d.ExternalId, d.Tags);
+END;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 62) INSERT [${schema}].SchemaVersion (Version) VALUES (62);
+GO
