@@ -350,6 +350,9 @@ def test_search_and_filters():
     adm, sid = make_admin(FakeConn())
     r = get(adm, sid, "/admin/developers?show=unmapped")
     assert "judy.doe@example.com" in r.body and "jane.doe@example.com" not in r.body
+    r = get(adm, sid, "/admin/developers?show=mapped")
+    assert "jane.doe@example.com" in r.body and "judy.doe@example.com" not in r.body
+    assert "With a business unit <span class='muted'>" in r.body
     r = get(adm, sid, "/admin/developers?q=wms")
     assert "jack.doe@example.com" in r.body and "jill.doe@example.com" not in r.body
 

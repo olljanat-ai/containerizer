@@ -31,7 +31,7 @@ is in `OrgRepository.HistoryError`.
 Pick each developer's **Business unit** and press **Save changes** (once, for every row you changed). **Suggested**
 is the business unit of the products of the repositories they commit to, weighed by commits: it says *matches* when
 it is the one set, *differs* when it is another. **Apply suggestions** sets it for every developer without a
-business unit whose suggestion is at least 60% sure. Filter by **No business unit** or **Ignored**, or search by
+business unit whose suggestion is at least 60% sure. Filter by **With a business unit**, **No business unit** or **Ignored**, or search by
 name, e-mail, repository or business unit. The list is in alphabetical order, 500 a page: **Previous** and **Next**
 above and below it turn the pages.
 

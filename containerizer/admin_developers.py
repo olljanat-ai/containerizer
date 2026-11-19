@@ -207,14 +207,17 @@ def _pager(show: str, text: str, page_no: int, pages: int, total: int) -> str:
 
 
 def developers_view(adm, s, m: Model, show: str, text: str, page_no: int = 1) -> str:
-    show = show if show in ("all", "unmapped", "ignored") else "all"
+    show = show if show in ("all", "mapped", "unmapped", "ignored") else "all"
     by_dev = m.links_of_dev()
     sugg = m.dev_suggestions()
     devs = sorted(m.devs.values(), key=lambda d: ((d["Name"] or d["Email"]).casefold(), d["Email"]))
     counts = {"all": sum(1 for d in devs if not d["Ignored"]),
+              "mapped": sum(1 for d in devs if not d["Ignored"] and d["BusinessUnitId"] is not None),
               "unmapped": sum(1 for d in devs if not d["Ignored"] and d["BusinessUnitId"] is None),
               "ignored": sum(1 for d in devs if d["Ignored"])}
-    if show == "unmapped":
+    if show == "mapped":
+        devs = [d for d in devs if not d["Ignored"] and d["BusinessUnitId"] is not None]
+    elif show == "unmapped":
         devs = [d for d in devs if not d["Ignored"] and d["BusinessUnitId"] is None]
     elif show == "ignored":
         devs = [d for d in devs if d["Ignored"]]
@@ -253,7 +256,7 @@ def developers_view(adm, s, m: Model, show: str, text: str, page_no: int = 1) ->
             f"aria-label='Ignore {e(d['Email'])}' title='A service account or bot: left out of the suggestions'></td></tr>")
     filters = " ".join(f"<a class='chip{' on' if k == show else ''}' href='/admin/developers?{urlencode({'show': k, 'q': text})}'>"
                        f"{t} <span class='muted'>{counts[k]}</span></a>"
-                       for k, t in (("all", "All"), ("unmapped", "No business unit"), ("ignored", "Ignored")))
+                       for k, t in (("all", "All"), ("mapped", "With a business unit"), ("unmapped", "No business unit"), ("ignored", "Ignored")))
     search = (f"<form method='get' action='/admin/developers' class='formrow'><input type='hidden' name='show' value='{e(show)}'>"
               f"<input type='search' name='q' value='{e(text)}' class='wide' placeholder='Name, e-mail, repository or business unit' "
               f"aria-label='Search'><button class='secondary'>Search</button></form>")
