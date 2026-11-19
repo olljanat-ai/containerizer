@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## 0.51.25 (2026-11-19)
+## 0.51.26 (2026-11-19)
 
 - **Out-of-support Node.js and Java versions no longer keep an application at B.** An application is rated by
   whether it runs in containers, not by whether its runtime or libraries are still supported:
@@ -30,6 +30,43 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `ToUpper` and `Trim` are evaluated now (`$(MSBuildProjectName).Api`, `$(AssemblyName.Replace(' ', '_'))`); anything
   else falls back to the project file's name, MSBuild's default.
 
+## 0.51.25 (2026-11-19)
+
+From an export of 47 Make it A orders of 15 real applications, none of which reached A:
+
+- **Make it A changes only what keeps the application from A.** It sent every configuration finding with a file:
+  234 of the 275 files of the first orders had only those (62 were Windows authentication in
+  `appsettings.Local.json`, which the prompt itself says to leave). Configuration findings rate A as they are, so
+  the calls bought nothing and each edit was a chance to break the build: one application rated A after its single
+  refactor file, and the 46 other files left it not building. An order now takes the refactor findings of the
+  server components, the configuration findings in the same files, and the state no volume can hold. The other
+  configuration findings are listed as not sent; desktop clients and tools, which do not count for the rating, are
+  left alone. *Findings still found* counts the same way. A refactoring order with configuration findings is as
+  before.
+- **A failure the unpatched code has too is not the patch's.** Most failed builds and runs had nothing to do with
+  the patch (a revoked NuGet signature, a feed without the organization's packages, a Windows path as a NuGet
+  source, an npm lock file out of sync, a missing Key Vault or Cosmos setting, a command-line tool without
+  arguments), yet every repair round asked the LLM to fix them, and its attempts (a new `NuGet.Config`, build
+  targets that run `npm install`) made things worse. A component that fails with the patch is now built once from
+  the unpatched commit: when it fails the same way, it is marked **the same without the patch**, is not repaired
+  and does not count against the patch, as long as at least one changed component builds and runs. The order page
+  and the notes name those components, the LLM-heavy chain reuses the build and stops when only such failures are
+  left.
+- **A repair round asks about the broken component only.** When a component built but did not run, every file of
+  the patch was asked about the joined logs of every broken component (28 files for another component's "KeyVault
+  URI variable is not set"). Now: the files a component's compiler errors name, else at most 3 files the patch
+  changed in that component, with that component's log. The repair prompt says to change nothing when the error
+  does not come from the patch, and never to work around it in project files, `NuGet.Config` or `package.json`.
+- **An application that cannot be made A says so at once**: when the only refactor findings are not sent to the
+  LLM (three applications had Windows authentication only in `launchSettings.json`), the order is refused with the
+  finding and the reason instead of spending its calls on configuration findings.
+- **A patch that makes a component disappear is not an A**: a repair rewrote a project file until the component
+  was no longer one, and the copy then rated A by the rules. The verification says so, and the chain starts over.
+- Smaller: `appsettings.Local.json` and other `*.Local.json`/`*.Local.config` files are developer-only (not
+  edited, findings only there are skipped); a new file the LLM wrote on one line with `\n` for its line breaks is
+  unescaped (`NuGet.Config is not valid XML`); an edit of a file that is not shown answers with what to do
+  instead (`package_changes` for a project file); a repair that lists the compiler's code as fixed is no longer
+  shown as "the LLM did not say this one is fixed".
 ## 0.51.24 (2026-11-19)
 
 - **Inventory → External services**: the FQDN or IP address search field is a drop-down: **All**, **FQDN** (services

@@ -187,8 +187,10 @@ def keep_target_frameworks(app_root: Path, before: dict[str, list[str]]) -> list
 
 # Developer-only files: the container never reads them (a Functions host takes its settings from the environment, and
 # appsettings.Development.json is left out of the image), so changing them only breaks the developer's machine.
-DEV_ONLY_RE = re.compile(r"(?i)(^|/)(local\.settings\.json|launchSettings\.json|[^/]*\.Development\.[^/]+)$|"
-                         r"(^|/)\.(vscode|idea)/")
+DEV_ONLY_RE = re.compile(r"(?i)(^|/)(local\.settings\.json|launchSettings\.json|[^/]*\.Development\.[^/]+|"
+                         r"[^/]*\.Local\.(json|config))$|(^|/)\.(vscode|idea)/")
+DEV_ONLY_TEXT = ("only in developer-only files (local.settings.json, *.Development.*, *.Local.json, "
+                 "launchSettings.json): the container does not read them")
 
 
 def dev_only(rel: str) -> bool:
@@ -230,10 +232,24 @@ def _language(project: str) -> str:
     return "code"
 
 
-def plan_tasks(components: list[dict], include_config: bool = False) -> tuple[list[dict], list[dict]]:
+NOT_NEEDED_FOR_A = ("configuration finding: it does not keep the application from A (the generated configuration "
+                    "is what it needs), so no code is changed for it")
+
+
+def keeps_from_a(c: dict, f: dict) -> bool:
+    """Whether a finding is one of those that keep its application from A: a refactor finding, or what makes a
+    component keep its own data where no volume can hold it (the state findings of a `state_unplaced` component)."""
+    if f.get("severity") == "refactor":
+        return True
+    return bool(c.get("state_unplaced")) and f.get("id") in {s.get("id") for s in c.get("state") or []} - {None}
+
+
+def plan_tasks(components: list[dict], include_config: bool = False, for_a: bool = False) -> tuple[list[dict], list[dict]]:
     """The LLM calls of an order, from assessment.json components (AppAssessment.to_dict()["components"]):
     one task per file, with every finding to fix in it. Refactor findings always; config findings when
-    `include_config`, or when they are in a file a refactor finding already sends. Findings whose evidence
+    `include_config`, or when they are in a file a refactor finding already sends. `for_a` (Make it A): the findings
+    that keep the application from A (keeps_from_a) and, as before, the config findings of the files those send;
+    every other config finding is left to the generated configuration. Findings whose evidence
     names no file in the application are skipped. Returns (tasks, skipped)."""
     tasks: dict[str, dict] = {}
     skipped: list[dict] = []
@@ -250,8 +266,7 @@ def plan_tasks(components: list[dict], include_config: bool = False) -> tuple[li
             ev = [parse_evidence(e) for e in f.get("evidence") or []]
             ev = [e for e in ev if e["file"] and not e["file"].startswith("/") and ".." not in Path(e["file"]).parts]
             if ev and all(dev_only(e["file"]) for e in ev):
-                skipped.append({**ident, "reason": "only in developer-only files (local.settings.json, "
-                                "*.Development.*, launchSettings.json): the container does not read them"})
+                skipped.append({**ident, "reason": DEV_ONLY_TEXT})
                 continue
             ev = [e for e in ev if not dev_only(e["file"])]
             seen, uniq = set(), []
@@ -263,14 +278,17 @@ def plan_tasks(components: list[dict], include_config: bool = False) -> tuple[li
                 skipped.append({**ident, "reason": "the evidence names no file to change"})
                 continue
             candidates.append((c, f, uniq))
-    refactor_files = {e["file"] for c, f, ev in candidates if f.get("severity") == "refactor" for e in ev}
+    def must(c: dict, f: dict) -> bool:
+        return keeps_from_a(c, f) if for_a else f.get("severity") == "refactor"
+    refactor_files = {e["file"] for c, f, ev in candidates if must(c, f) for e in ev}
     for c, f, ev in candidates:
         files = sorted({e["file"] for e in ev}, key=lambda x: [e["file"] for e in ev].index(x))
-        if f.get("severity") != "refactor" and not include_config:
+        if not must(c, f) and not include_config:
             files = [x for x in files if x in refactor_files]
             if not files:
                 skipped.append({"rule": f.get("id"), "title": f.get("title"), "component": c.get("name"),
-                                "severity": f.get("severity"), "reason": "configuration finding: not included "
+                                "severity": f.get("severity"), "reason": NOT_NEEDED_FOR_A if for_a else
+                                "configuration finding: not included "
                                 "(order with configuration findings to have code changed for it)"})
                 continue
         for file in files:
@@ -335,7 +353,11 @@ REPAIR_GUIDANCE = """An earlier change (the patch below) was made to fix the fin
 the earlier change. Often another file of the patch changed something this file uses (a constructor, a method, a
 setting): adapt this file to it, do not undo the earlier change. A NuGet error that a package or version does not
 exist (NU1101, NU1102) is the exception: remove or correct that package reference (on .NET Core 3.0 and later,
-the Microsoft.AspNetCore.* namespaces of ASP.NET Core need no package)."""
+the Microsoft.AspNetCore.* namespaces of ASP.NET Core need no package).
+Only fix what the earlier change caused. When the error does not come from the file below or from the patch (a
+setting, a secret, a command-line argument or a service that is missing where it runs; a package feed, npm or a
+certificate that fails), change nothing: answer with empty edits and say in not_fixed what it needs. Never work
+around such an error by changing the build (project files, NuGet.Config, package.json, Directory.Build.props)."""
 
 
 def build_errors(log: str) -> list[dict]:
@@ -598,6 +620,8 @@ def repair_payload(payload: dict, result: dict, base_job: int) -> dict:
         # then the sandbox, and in an LLM-heavy window the chain until it runs there (heavy_next)
         keep_a = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors", "heavy_same")
                   + REUSE_KEYS}
+        if result.get("baseline"):
+            keep_a["baseline"] = result["baseline"]
         return {**keep_a, "base_patch": result["patch"], "base_job": int(base_job), "errors": errors,
                 "heavy_parent": int(base_job), "heavy_round": int(payload.get("heavy_round") or 1) + 1}
     keep = ("version", "app", "rating", "application_id", "assessment_id", "source_key", "commit", "source",
@@ -658,17 +682,37 @@ def unplaced_components(doc: dict) -> list[dict]:
 
 
 def rating_a_components(doc: dict) -> list[dict]:
-    """What keeps a B-rated application from A, by component: those with refactor or config findings to change
-    in code, and the server components that keep their own data in a folder no volume can be put on (in
-    assessment.json order, once each). Data a volume holds is not moved: that would be a code change A does
+    """What keeps a B-rated application from A, by component: the server components with refactor findings to
+    change in code, and those that keep their own data in a folder no volume can be put on (in assessment.json
+    order, once each). The rating is the worst verdict of the server components (AppAssessment.rating), and
+    configuration findings rate A: a component with only those, or one that is no server component (a desktop
+    client, a tool), is left as it is. Data a volume holds is not moved: that would be a code change A does
     not need."""
     seen, out = set(), []
-    for c in [*eligible_components(doc), *unplaced_components(doc)]:
+    blocking = [c for c in doc.get("components") or [] if c.get("verdict") == "refactor"
+                and c.get("tier") in ("server", "platform", None) and plan_tasks([c], for_a=True)[0]]
+    for c in [*blocking, *unplaced_components(doc)]:
         if c.get("name") not in seen:
             seen.add(c.get("name"))
             out.append(c)
     order = [c.get("name") for c in doc.get("components") or []]
     return sorted(out, key=lambda c: order.index(c.get("name")) if c.get("name") in order else len(order))
+
+
+def not_sendable(doc: dict) -> str:
+    """Why Make it A has nothing to send although the application is not A: the refactor findings of its server
+    components that are not sent to the LLM, each with the reason (for the error an order is refused with)."""
+    out = []
+    for c in doc.get("components") or []:
+        if c.get("verdict") != "refactor" or c.get("tier") not in ("server", "platform", None):
+            continue
+        for x in plan_tasks([c], for_a=True)[1]:
+            if x.get("severity") == "refactor" and (x.get("rule"), x.get("reason")) not in [(o[0], o[2]) for o in out]:
+                out.append((x.get("rule"), c.get("name"), x.get("reason")))
+    if not out:
+        return ""
+    return ("; what keeps it from A is not sent to the LLM: "
+            + "; ".join(f"{r} ({n}): {why}" for r, n, why in out[:5]))[:700]
 
 
 def build_payload(doc: dict, source: dict, commit: str | None, component: str | None = None,
@@ -685,12 +729,14 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
         max_calls = MAX_CALLS_A if goal == "rating-a" else MAX_CALLS
     comps = [c for c in doc.get("components") or [] if c.get("verdict") in ELIGIBLE]
     if goal == "rating-a":
-        # every refactor finding, the configuration ones with a file, and the state move of stateful components
-        include_config = True
+        # what keeps it from A: the refactor findings of the server components and the state no volume can hold
+        # (with the configuration findings of the same files). Every other configuration finding rates A as it is:
+        # the generated configuration settles it, and an edit for it only risks the build
+        include_config = False
         comps = rating_a_components(doc)
         if not comps:
             raise RefactorError("nothing to change: no finding of this application can be fixed in code and no "
-                                "component keeps its own data")
+                                "component keeps its own data" + not_sendable(doc))
     if goal == "stateless":
         include_config = True
         comps = stateful_components(doc)
@@ -701,9 +747,9 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
         if not comps:
             raise RefactorError(f"no component {component!r} in {doc.get('name')}"
                                 + (" that keeps its own data" if goal == "stateless" else ""))
-    tasks, skipped = plan_tasks(comps, include_config)
+    tasks, skipped = plan_tasks(comps, include_config, for_a=goal == "rating-a")
     if not tasks and goal == "rating-a" and not any(c.get("state_unplaced") for c in comps):
-        raise RefactorError("nothing to change: no finding of this application can be fixed in code")
+        raise RefactorError("nothing to change: no finding of this application can be fixed in code" + not_sendable(doc))
     if not tasks and goal not in ("stateless", "rating-a"):
         raise RefactorError("nothing to change: no refactor finding (or configuration finding with a file) "
                             "to send to the LLM" + (" in " + component if component else ""))
@@ -1485,7 +1531,10 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
             errors.append(f"edit {i}: {ed.get('file')!r} is not a path inside the application")
             continue
         if rel not in allowed:
-            errors.append(f"edit {i}: {rel} may not be edited (only the files shown: {', '.join(shown)})")
+            how = ("to add or remove a package, use package_changes instead of editing the project file" if
+                   rel.lower().endswith(("proj", "packages.config", "package.json")) else
+                   "if the fix belongs there and not in the files shown, make no edit and say so in not_fixed")
+            errors.append(f"edit {i}: {rel} may not be edited (only the files shown: {', '.join(shown)}); {how}")
             continue
         if dev_only(rel):
             continue                # a developer-only file: left out, the container does not read it
@@ -1555,7 +1604,12 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
         elif (harm := harmful_edit(rel, "", content)) and harmful_edit(rel, "", without_credentials("", content)):
             errors += [f"new file {i}: {h}" for h in harm]
         else:
-            new_files[rel] = without_credentials("", content)
+            content = without_credentials("", content)
+            if "\n" not in content.strip() and content.count("\\n") >= 2:
+                # the whole file on one line with the two characters \n where its line breaks are: JSON escaped
+                # twice (a NuGet.Config written this way was "not valid XML ... Line 1, position 39")
+                content = _unescaped(content)
+            new_files[rel] = content
             changes.append({"file": rel, "kind": "new", "lines": content.rstrip("\n").count("\n") + 1})
     pkgs = [p for p in answer.get("package_changes") or [] if isinstance(p, dict)]
     if pkgs:
@@ -1863,14 +1917,77 @@ def diffstat(text: str) -> list[dict]:
 
 # --------------------------------------------------------------------------- statuses
 
+OK_VERIFY = ("ok", "ok-external")
+FAILED_VERIFY = ("build-failed", "run-failed")
+# what is compared with the unpatched code: a failed build or run, and a run that ends in a finding (a Windows-only
+# API the rules did not see: "PlatformNotSupportedException"), which the application has without the patch too
+BASELINE_VERIFY = FAILED_VERIFY + ("finding",)
+
+
 def verification_status(applies: bool, changes: int, verify: list[dict] | None) -> str:
-    """verified: applies, and every changed component built and ran; applies-only: applies, but a build or
-    run failed or could not be done (or verification was off); failed: does not apply or changes nothing."""
+    """verified: applies, and every changed component built and ran, or fails exactly as it does without the
+    patch (`same_before`, mark_before: the patch did not break it) while at least one does build and run;
+    applies-only: applies, but a build or run failed or could not be done (or verification was off); failed: does
+    not apply or changes nothing."""
     if not applies or not changes:
         return "failed"
-    if verify and all(v.get("status") in ("ok", "ok-external") for v in verify):
+    if verify and any(v.get("status") in OK_VERIFY for v in verify) \
+            and all(v.get("status") in OK_VERIFY or v.get("same_before") for v in verify):
         return "verified"
     return "applies-only"
+
+
+# ---- the same failure without the patch
+_VOLATILE_RE = re.compile(r"\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b|\b[0-9a-f]{12,}\b|\d+", re.I)
+
+
+def failure_of(v: dict, names: tuple = ()) -> dict:
+    """What one component's verification failed with, comparable between two copies of the code: its status, the
+    compiler/NuGet errors by file and code, and its error lines without what changes from run to run (numbers,
+    ids, the copies' names)."""
+    log = str(v.get("log_tail") or v.get("detail") or "")
+    text = error_lines(log, 600)
+    for n in sorted((x for x in names if x), key=len, reverse=True):
+        text = text.replace(n, "APP")
+    return {"status": v.get("status"), "errors": sorted({f"{e['file']}:{e['code']}" for e in build_errors(log)}),
+            "text": _VOLATILE_RE.sub("#", text)[-600:]}
+
+
+def same_failure(now: dict, before: dict) -> bool:
+    """Whether a patched component fails the way the unpatched one does (failure_of of both): the same step, and no
+    compiler or NuGet error the unpatched build does not have; without such errors, about the same error lines."""
+    if now.get("status") not in BASELINE_VERIFY or now.get("status") != before.get("status"):
+        return False
+    a, b = set(now.get("errors") or []), set(before.get("errors") or [])
+    if a or b:
+        return bool(a) and a <= b
+    import difflib
+    x, y = str(now.get("text") or ""), str(before.get("text") or "")
+    return x == y or difflib.SequenceMatcher(None, x, y, autojunk=False).ratio() >= 0.8
+
+
+def mark_before(verification: list[dict], baseline: dict, names: tuple = ()) -> list[dict]:
+    """Each failed row of a verification with how the component does without the patch (`baseline`: component ->
+    failure_of of the unpatched build): `before` (its status there) and `same_before` (it fails the same way, so
+    the patch did not break it and no repair can fix it)."""
+    for v in verification or []:
+        b = baseline.get(v.get("component"))
+        if b and v.get("status") in BASELINE_VERIFY:
+            v["before"] = b.get("status")
+            v["same_before"] = same_failure(failure_of(v, names), b)
+    return verification
+
+
+def bad_text(verification: list[dict]) -> str:
+    """The reason of an order that is not verified: each component that did not build or run, and whether it does
+    without the patch."""
+    out = []
+    for v in verification or []:
+        if v.get("status") in OK_VERIFY:
+            continue
+        out.append(f"{v.get('component')}: {v.get('status')}" + (f" ({v['detail']})" if v.get("detail") else "")
+                   + (" [the same without the patch]" if v.get("same_before") else ""))
+    return "; ".join(out)[:600]
 
 
 # What a patch that applies but is not verified needs, by its verification (what the pages show)
@@ -2036,11 +2153,12 @@ def align_package_versions(app_root: Path, log=print) -> list[str]:
 
 
 def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 900, name: str | None = None,
-                      files: list[str] | None = None) -> list[dict]:
+                      files: list[str] | None = None, only: set | None = None) -> list[dict]:
     """Build and run each changed component of the patched copy (verify.verify_component): those of the payload's
     tasks and those whose project folder holds a file the patch changes (`files`, relative to the application: a
     repair, or an order that continues an earlier patch, has no tasks of its own). `name`: the application's name
-    for the image tags (variant_name; default the folder's name)."""
+    for the image tags (variant_name; default the folder's name). `only`: these components instead (the build of
+    the unpatched code, for the components that fail with the patch)."""
     from .assess import assess
     from .generate import buildable
     from .rules import load_rules
@@ -2058,12 +2176,17 @@ def verify_components(payload: dict, app_root: Path, work: Path, timeout: int = 
     out = []
     changed = {t["component"] for t in payload.get("tasks") or []}
     changed |= {_component_of(payload["components"], f).get("name") for f in files or []}
+    if only is not None:
+        changed = set(only)
     for comp in payload["components"]:
         if comp["name"] not in changed:
             continue
         c = by_project.get(comp.get("project"))
         if c is None:
-            out.append({"component": comp["name"], "status": "not-built", "detail": "not a deployable component"})
+            # the payload's components were deployable when the application was assessed: the patch changed that
+            out.append({"component": comp["name"], "status": "not-built", "lost": only is None,
+                        "detail": "not a deployable component" + (
+                            " any more: the patch changed its project so that it is no longer one" if only is None else "")})
             continue
         if not buildable(c):
             out.append({"component": comp["name"], "status": "not-built",
@@ -2173,7 +2296,10 @@ def generate(payload: dict, tasks: list[dict], app_root: Path, ask, limit: int, 
             if put_back:
                 r["put_back"] = "; ".join(put_back)
         for k, r in enumerate(rows, 1):
-            said = _names(r["rule"], k, said_fixed)
+            # a repair has one finding, the tool's own "build-error": the answer names the compiler's code instead
+            # ("CS0103"), so whatever it lists as fixed is this one
+            said = _names(r["rule"], k, said_fixed) or (r["rule"] == "build-error" and len(rows) == 1
+                                                        and bool(said_fixed) and not reasons)
             why = next((v for s, v in reasons.items() if _names(r["rule"], k, [s])), None)
             if code_changes and (said or (not said_fixed and why is None)):
                 r.update(status="fixed", reason="")
@@ -2378,8 +2504,32 @@ def _stateful_only(payload: dict) -> dict:
 
 
 def _broken(verification: list[dict]) -> list[dict]:
-    """The components of a verification that did not build or run (what a repair round fixes)."""
-    return [v for v in verification or [] if v.get("status") in ("build-failed", "run-failed")]
+    """The components of a verification that did not build or run (what a repair round fixes): not those that
+    fail the same way without the patch (mark_before), which no change of the patch can repair."""
+    return [v for v in verification or [] if v.get("status") in FAILED_VERIFY and not v.get("same_before")]
+
+
+RUN_REPAIR_FILES = 3    # files a repair round asks about per component that builds but does not run
+
+
+def repair_plan(rp: dict, comps: list[dict], app_root: Path, broken: list[dict], changed: list[str],
+                fixed: set = frozenset()) -> list[dict]:
+    """The tasks of a repair round of a Make it A order, per broken component: the files its compiler errors
+    name; without any (it builds but does not run, or the build fails outside the code), the files the patch
+    changed in that component, at most RUN_REPAIR_FILES, each with that component's own errors. Before, every file
+    of the patch was asked about the errors of every component: 30 LLM calls for one missing setting."""
+    out, seen = [], set()
+    for v in broken:
+        vlog = str(v.get("log_tail") or v.get("detail") or "")
+        errs = without_fixed(build_errors(vlog), fixed)
+        own = [f for f in changed if _component_of(comps, f).get("name") == v.get("component")]
+        code = [f for f in own if f.lower().endswith((".cs", ".vb", ".fs", ".cshtml", ".razor"))]
+        files = ((code + [f for f in own if f not in code]) or changed)[:RUN_REPAIR_FILES]    # when no error names a file
+        for t in repair_tasks({**rp, "errors": errs, "log_tail": vlog[-4000:]}, app_root, files):
+            if t["file"] not in seen:
+                seen.add(t["file"])
+                out.append(t)
+    return out
 
 
 def still_stateful(doc: dict) -> list[dict]:
@@ -2390,9 +2540,9 @@ def still_stateful(doc: dict) -> list[dict]:
 
 
 def remaining_findings(doc: dict) -> list[dict]:
-    """What a refactoring could still change in an assessment: (component, rule, title, severity) of the findings
-    a 'rating-a' order would send."""
-    tasks, _ = plan_tasks(rating_a_components(doc), include_config=True)
+    """What still keeps an assessment from A that a refactoring could change: (component, rule, title, severity)
+    of the findings a 'rating-a' order would send (with the configuration findings of the same files)."""
+    tasks, _ = plan_tasks(rating_a_components(doc), for_a=True)
     seen, out = set(), []
     for t in tasks:
         for f in t["findings"]:
@@ -2476,6 +2626,27 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
             f"{len(reuse_failed)} not")
     sandbox_errors = str(payload.get("sandbox_errors") or "")
     comps = list(payload.get("components") or [])
+    # how the components that fail with the patch do without it (component -> failure_of): built once, and carried
+    # by the orders that continue this one. A component that fails the same way was not broken by the patch
+    baseline: dict = {str(k): v for k, v in (payload.get("baseline") or {}).items() if isinstance(v, dict)}
+    base_name = name[:58].rstrip("-") + "-base"
+
+    def with_baseline(verification: list[dict], all_payload: dict) -> list[dict]:
+        need = {v["component"] for v in verification if v.get("status") in BASELINE_VERIFY} - set(baseline)
+        if need:
+            progress(f"verifying: building {len(need)} failing component(s) without the patch")
+            try:
+                _, base_app = checkout(payload["source"], payload.get("commit"), work / base_name)
+                for b in verify_components({**all_payload, "tasks": []}, base_app, work / "verify-base",
+                                           name=base_name, only=need):
+                    if b.get("component") in need and b.get("status") in OK_VERIFY + BASELINE_VERIFY:
+                        baseline[b["component"]] = failure_of(b, (base_name, name))   # (not "not-built": no Docker)
+                    log(f"without the patch: {b.get('component')}: {b.get('status')}")
+            except Exception as ex:  # noqa: BLE001 - no baseline: every failure counts as the patch's
+                notes.append(f"the unpatched code could not be built for comparison: {type(ex).__name__}: {ex}"[:300])
+            finally:
+                shutil.rmtree(work / base_name, ignore_errors=True)
+        return mark_before(verification, baseline, (base_name, name))
     rows: dict[tuple, dict] = {}                  # (component, rule, file) -> the latest attempt
     repair_rows: list[dict] = []
     notes: list[str] = []
@@ -2545,35 +2716,42 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
                 verification = verify_components(all_payload, check_app, work / "verify-work", name=name,
                                                  files=app_files(check_repo, check_app,
                                                                  patch.decode("utf-8", errors="replace")))
-            loop[-1]["verification"] = [{"component": v.get("component"), "status": v.get("status")}
+            # NuGet's package errors need no LLM: fixed also when the repair rounds or the LLM calls are used up (the
+            # last round's build failed only on a framework package an LLM added: verify again, at most FREE_ROUNDS)
+            failed = [v for v in verification if v.get("status") in FAILED_VERIFY]
+            flogs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in failed)
+            dchanges, dnotes, fixed = fix_packages(app_root, flogs, log) if failed and not late() else ([], [], set())
+            notes += dnotes
+            changes_all += dchanges
+            if dchanges and not without_fixed(build_errors(flogs), fixed):
+                # NuGet's package errors only: fixed without the LLM, verify again
+                loop[-1]["verification"] = [{"component": v.get("component"), "status": v.get("status")}
+                                            for v in verification]
+                loop.append({"pass": p, "round": rnd, "kind": "repair", "files": len({c["file"] for c in dchanges}),
+                             "calls": 0, "changes": len(dchanges)})
+                if rnd >= repairs + 1 + free and free < FREE_ROUNDS:
+                    free += 1
+                continue
+            # what still fails: does it without the patch too? Then the patch did not break it, and it is not repaired
+            if verify and any(v.get("status") in BASELINE_VERIFY for v in verification):
+                verification = with_baseline(verification, all_payload)
+            loop[-1]["verification"] = [{"component": v.get("component"), "status": v.get("status"),
+                                         **({"same_before": True} if v.get("same_before") else {})}
                                         for v in verification]
             broken = _broken(verification)
             logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in broken)
             if not broken and sandbox_errors and p == 1 and rnd == 1:
                 logs = sandbox_errors                 # it runs here, but failed in the sandbox: repair that once
-                broken = [{"component": "sandbox"}]
+                broken = [{"component": "sandbox", "log_tail": sandbox_errors}]
             if not broken or late():
                 break
             # a repair round, in this job: the errors of the build or the run, the files they are in, the patch
             text = patch.decode("utf-8", errors="replace")
-            rp = {**payload, "goal": "repair", "base_patch": text, "errors": build_errors(logs),
+            rp = {**payload, "goal": "repair", "base_patch": text, "errors": without_fixed(build_errors(logs), fixed),
                   "log_tail": logs[-4000:], "components": comps}
-            # NuGet's package errors need no LLM: fixed also when the repair rounds or the LLM calls are used up (the
-            # last round's build failed only on a framework package an LLM added: verify again, at most FREE_ROUNDS)
-            dchanges, dnotes, fixed = fix_packages(app_root, logs, log)
-            if dchanges:
-                notes += dnotes
-                changes_all += dchanges
-                rp["errors"] = without_fixed(rp["errors"], fixed)
-                if not rp["errors"]:            # NuGet's package errors only: fixed without the LLM, verify again
-                    loop.append({"pass": p, "round": rnd, "kind": "repair", "files": len({c["file"] for c in dchanges}),
-                                 "calls": 0, "changes": len(dchanges)})
-                    if rnd >= repairs + 1 + free and free < FREE_ROUNDS:
-                        free += 1
-                    continue
             if rnd > repairs + free or calls >= budget:
                 break
-            rtasks = repair_tasks(rp, app_root, app_files(repo, app_root, text))
+            rtasks = repair_plan(rp, comps, app_root, broken, app_files(repo, app_root, text), fixed)
             for t in rtasks:
                 c = _component_of(comps, t["file"])
                 t.update(component=c.get("name"), project=c.get("project"))
@@ -2628,6 +2806,7 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
                           "edited": reuse_failed} if reused or reuse_failed else None),
               "still_state": still_stateful(doc_after) if doc_after else [],
               "remaining": remaining_findings(doc_after) if doc_after else [],
+              "baseline": baseline,
               "limits": {"max_calls": budget, "max_passes": passes, "max_repairs": repairs}}
     if not changes_all or patch is None:
         result["rating_reached"] = False
@@ -2655,14 +2834,24 @@ def run_rating_a(payload: dict, work: Path, ask=None, progress=None, verify: boo
     if text.encode("utf-8") != patch:
         result["patch_b64"] = base64.b64encode(patch).decode()
     result["status"] = verification_status(True, len(changes_all), verification if verify else None)
-    # A is reached when the rules rate the patched copy A and it builds and runs (or verification was off)
+    # A is reached when the rules rate the patched copy A and it builds and runs (or verification was off). A
+    # component that fails the same way without the patch does not count against it (verification_status)
     result["rating_reached"] = doc_after.get("rating") == "A" and (result["status"] == "verified" or not verify)
+    lost = [v["component"] for v in verification if v.get("lost")]
+    if lost:
+        notes.append(f"the patch made {', '.join(lost[:8])} no longer a deployable component (its project file was "
+                     "changed so that it is not one): the rating after the patch does not count it, and the patch "
+                     "is not verified")
+    same = [v["component"] for v in verification if v.get("same_before")]
+    if same:
+        notes.append(f"{len(same)} component(s) fail the same way without the patch ({', '.join(same[:8])}"
+                     f"{', ...' if len(same) > 8 else ''}): the patch did not break them and no code change of this "
+                     "order repairs them. Their build or run has to work first (a package feed, a setting, a service "
+                     "they need): see their logs under Verification.")
     if not verify:
         result["reason"] = "verification was off: the patch applies, it was not built"
     elif result["status"] != "verified":
-        bad = [v for v in verification if v.get("status") not in ("ok", "ok-external")]
-        result["reason"] = "; ".join(f"{v['component']}: {v['status']}" + (f" ({v['detail']})" if v.get("detail") else "")
-                                     for v in bad)[:600] or "no component could be built"
+        result["reason"] = bad_text(verification) or "no component could be built"
     return result
 
 
@@ -2775,7 +2964,10 @@ def failure_signature(result: dict) -> str:
     numbers): the same signature on orders in a row means the chain is stuck on the same errors."""
     parts = []
     for v in result.get("verification") or []:
-        if v.get("status") in ("ok", "ok-external", "not-built"):
+        if v.get("lost"):                   # the patch made it no component: the same every round until it is undone
+            parts.append(f"{v.get('component')}=lost")
+            continue
+        if v.get("status") in ("ok", "ok-external", "not-built") or v.get("same_before"):
             continue
         log = str(v.get("log_tail") or v.get("detail") or "")
         errs = sorted({f"{e['file']}:{e['code']}" for e in build_errors(log)})
@@ -2803,7 +2995,7 @@ def heavy_stuck(payload: dict, result: dict) -> tuple[dict, str | None]:
 def heavy_avoid(result: dict) -> str:
     """The errors of the stuck attempt, for the prompt of the order that starts over."""
     logs = "\n".join(str(v.get("log_tail") or v.get("detail") or "") for v in result.get("verification") or []
-                     if v.get("status") not in ("ok", "ok-external", "not-built"))
+                     if v.get("status") not in ("ok", "ok-external", "not-built") and not v.get("same_before"))
     sb = result.get("sandbox") or {}
     if sb.get("status") == "failing":
         logs += "\n" + sandbox_errors(sb)
@@ -2832,6 +3024,12 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
         "base_patch") else 0
     if same >= 2:
         return {**out, "stopped": "two orders in a row changed nothing"}
+    ver = result.get("verification") or []
+    if result.get("rating_after") == "A" and result.get("status") != "verified" and sb.get("status") != "failing" \
+            and ver and not _broken(ver) and not any(v.get("lost") for v in ver) \
+            and any(v.get("same_before") for v in ver):
+        return {**out, "stopped": "the patched copy rates A, and what does not build or run fails the same way "
+                                  "without the patch: nothing is left for the LLM"}
     stuck_keys, restart = heavy_stuck(payload, result)
     restarts = int(payload.get("heavy_restarts") or 0)
     if restart and restarts >= HEAVY_RESTARTS:
@@ -2845,6 +3043,8 @@ def heavy_next(job: dict, payload: dict, result: dict, ends: datetime, work: Pat
         except Exception as ex:  # noqa: BLE001 - it expires on its own
             out["note"] = f"the failing variant was not removed: {type(ex).__name__}"
     keep = {k: v for k, v in payload.items() if k not in ("deadline", "base_patch", "sandbox_errors") + REUSE_KEYS}
+    if result.get("baseline"):              # the unpatched builds: the same commit, not built again
+        keep["baseline"] = result["baseline"]
     nxt = {**keep, "heavy_round": rnd + 1, "heavy_parent": jid, "heavy_same": same, **stuck_keys,
            **({"base_patch": patch} if patch else {}), **({"sandbox_errors": errors} if errors else {})}
     if restart:                     # from the original code again, told what failed

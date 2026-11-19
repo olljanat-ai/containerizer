@@ -187,9 +187,14 @@ yourself.
 
 ## Make it A
 
-**Make it A** is one order for everything that keeps a B-rated application from A: its refactor findings,
-its configuration findings that name a file, and, for the server components that keep their own data, the
-move of that data to SQL Server. It runs on request only:
+**Make it A** is one order for what keeps a B-rated application from A, and nothing else: the refactor findings
+of its server components (with the configuration findings in the same files) and, for the server components that
+keep their own data where no volume can hold it, the move of that data. Configuration findings in other files are
+not sent: they rate A as they are, the generated configuration settles them, and every edit made for one is a
+chance to break the build (the order page lists them under *Findings not sent to the LLM*). Components that are no
+server components (a desktop client, a tool) do not count for the rating and are left alone. An application whose
+only refactor findings cannot be sent (found only in developer-only files such as `launchSettings.json`, or
+without a file) is refused at once, with that reason. It runs on request only:
 **Make it A** in the Refactoring box of the results page (operators, administrators and the application's
 product owners, with the queue's estimate), or **Make it A: every B application** for administrators (below). A scan
 never orders one by itself.
@@ -218,13 +223,21 @@ The order is one `refactor` job (goal `rating-a`) that loops in the queue runner
    a stateful component that open its embedded database get the stateless guidance.
 2. **Apply and verify.** Everything changed so far becomes one commit for the assessed commit; it is applied
    to a clean copy, and the changed components are built and run.
-3. **Repair.** When a build or run fails, a repair round in the same job gives the LLM the compiler errors
-   (or the run log), the files they are in and the patch, and the combined patch is verified again: at most
-   **2 repair rounds** a pass.
-4. **Assess again.** The patched copy is assessed with every rule. A is reached when it rates A and builds
-   and runs.
-5. **Second pass.** Still B with findings left (still found by the rules, or a component that still keeps
-   its data) and LLM calls left: one more pass on what remains, then steps 2 to 4 again. At most **2 passes**.
+3. **The same without the patch?** A component that fails is built and run once more from the unpatched
+   commit. When it fails the same way there (the same step, no new compiler or NuGet error, or the same error
+   lines of a run), the patch did not break it: it is marked *the same without the patch*, is not repaired,
+   and does not count against the patch. Typical causes are a package feed, a signature or lock file the build
+   refuses, or a setting or service the component needs to start; they have to be fixed outside the patch. The
+   orders of an LLM-heavy chain reuse this build.
+4. **Repair.** When a build or run fails because of the patch, a repair round in the same job gives the LLM that
+   component's compiler errors and the files they are in (or, when it builds but does not run, its log and at
+   most 3 of the files the patch changed in that component) with the patch, and the combined patch is verified
+   again: at most **2 repair rounds** a pass.
+5. **Assess again.** The patched copy is assessed with every rule. A is reached when it rates A and its changed
+   components build and run; components that fail the same way without the patch are left out of that, as long
+   as at least one changed component does build and run.
+6. **Second pass.** Still B with findings left (still found by the rules, or a component that still keeps
+   its data) and LLM calls left: one more pass on what remains, then steps 2 to 5 again. At most **2 passes**.
 
 Every LLM call of the job, retries and repair rounds included, counts against its limit of **16 calls**;
 files beyond it are *not attempted*. Each pass leaves a quarter of the calls (at most 4) for its repair rounds,
