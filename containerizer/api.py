@@ -7,6 +7,8 @@
     GET    /api/v1/applications[?unmapped=true&productId=&name=&tag=]
     GET    /api/v1/applications/{id}         PATCH  /api/v1/applications/{id}
     GET    /api/v1/audit[?table=&rowId=&limit=]
+    GET    /api/v1/inventory/{binaries|databases|services}[?q=&name=&server=&applicationId=&productId=&removed=true
+                                                          &limit=&offset=]   (inventory.py, read only)
 
 Callers send `Authorization: Bearer <access token>` issued by the same OpenID provider as the admin
 sign-in for this API's audience (CONTAINERIZER_API_AUDIENCE); the token's signature, issuer, audience
@@ -40,6 +42,7 @@ FIELDS = {
 }
 KEYS = {"BusinessUnit": "BusinessUnitId", "Product": "ProductId", "Application": "ApplicationId"}
 PATHS = {"business-units": "BusinessUnit", "products": "Product", "applications": "Application"}
+INVENTORY = {"binaries": "binary", "databases": "database", "services": "service"}
 
 
 class ApiError(Exception):
@@ -163,6 +166,12 @@ class Api:
         parts = path.strip("/").split("/")[2:]
         if parts == ["audit"] and method == "GET":
             return _json(200, self.audit(conn, q))
+        if parts[:1] == ["inventory"]:
+            if len(parts) != 2 or parts[1] not in INVENTORY:
+                raise ApiError(404, "not_found", "inventory lists: binaries, databases, services")
+            if method != "GET":
+                raise ApiError(405, "method_not_allowed", "the inventory is read only: scans keep it")
+            return _json(200, self.inventory(conn, INVENTORY[parts[1]], q))
         if not parts or parts[0] not in PATHS or len(parts) > 2:
             raise ApiError(404, "not_found", "no such resource")
         table = PATHS[parts[0]]
@@ -258,6 +267,39 @@ class Api:
                 r[k] = json.loads(r[k]) if r[k] else None
             rows.append(r)
         return {"items": rows}
+
+    def inventory(self, conn, kind: str, q: dict) -> dict:
+        """One inventory list (cz.vInventory): binaries of A-rated builds, databases, external services; `q` searches
+        every column, `name` and `server` match exactly (no case), the rest filter; removed items with removed=true."""
+        where, params = ["Kind = %s"], [kind]
+        if q.get("removed", ["false"])[0].lower() != "true":
+            where.append("RemovedAt IS NULL")
+        for key, col in (("name", "Name"), ("server", "Server")):
+            if q.get(key):
+                where.append(f"{col} = %s")
+                params.append(q[key][0][:200])
+        for key, col in (("applicationId", "ApplicationId"), ("productId", "ProductId")):
+            if q.get(key):
+                where.append(f"{col} = %s")
+                params.append(_int(q[key][0], key))
+        text = " ".join((q.get("q") or [""])[0].split())[:100]
+        if text:
+            like = "%" + re.sub(r"([%_\[])", r"[\1]", text) + "%"
+            where.append("(Name LIKE %s OR Server LIKE %s OR ComponentName LIKE %s OR ApplicationName LIKE %s "
+                         "OR ProductName LIKE %s OR Source LIKE %s OR Detail LIKE %s OR RepositoryUrl LIKE %s)")
+            params += [like] * 8
+        limit = min(max(_int(q.get("limit", ["1000"])[0], "limit"), 1), 10000)
+        offset = _int(q.get("offset", ["0"])[0], "offset")
+        cur = conn.cursor(as_dict=True)
+        cur.execute(f"SELECT ItemId, ApplicationId, ApplicationName, ProductId, ProductName, BusinessUnitName, RepositoryUrl, "
+                    f"SourcePath, ComponentName, Name, Server, Port, Detail, Source, FirstSeenAt, LastSeenAt, RemovedAt "
+                    f"FROM cz.vInventory WHERE {' AND '.join(where)} ORDER BY Name, Server, ApplicationName, ComponentName, ItemId "
+                    f"OFFSET %s ROWS FETCH NEXT %s ROWS ONLY", (*params, offset, limit + 1))
+        rows = cur.fetchall()
+        out = {"items": [_camel(r) for r in rows[:limit]], "kind": kind}
+        if len(rows) > limit:
+            out["next"] = offset + limit           # more: ask again with offset=next
+        return out
 
     # -- writes ---------------------------------------------------------------------------------
 
