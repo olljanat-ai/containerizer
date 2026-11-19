@@ -16,7 +16,7 @@ Administrators make keys on **Admin → API**, which also shows how to call the 
 | Role | May |
 | --- | --- |
 | Read only | GET everything the API offers |
-| Full | also add, change and remove business units and products, and map applications |
+| Full | also add, change and remove business units and products, and map applications and developers |
 
 The key is shown once, when it is made: only its SHA-256 is stored. The page lists every key with its
 status, who made it and when, when it expires and when it was last used, and revokes keys. Making and
@@ -63,6 +63,8 @@ Bodies are JSON (`Content-Type: application/json`, up to 64 KiB); unknown fields
 | `GET` · `PATCH` · `PUT` · `DELETE /api/v1/products/{id}` | as above (409 while applications are mapped to it) |
 | `GET /api/v1/applications` | list with the latest rating and the [tags](sign-in.md#application-tags) (`?unmapped=true`, `?productId=`, `?name=`, `?tag=`, `?retired=true`) |
 | `GET` · `PATCH /api/v1/applications/{id}` | read · set `productId`, `displayName`, `owner`, `description`, `retired` (applications themselves come from scans) |
+| `GET /api/v1/developers` | the people who committed to the organizations' repositories ([Admin → Developers](developers.md)), by name: `id`, `email`, `name`, `businessUnitId`, `businessUnitName`, `ignored`, `firstSeenAt`, `lastCommitAt` (`?email=` matches exactly, any case; `?name=`, `?businessUnitId=`, `?unmapped=true`, `?ignored=true` adds the ignored ones) |
+| `GET` · `PATCH /api/v1/developers/{id}` | read · set `businessUnitId` (an id or `null`) and `ignored` (administrators and Full keys only; developers themselves come from scans) |
 | `GET /api/v1/audit` | the change history (`?table=Application`, `?rowId=`, `?limit=` up to 1000) |
 | `GET /api/v1/inventory/binaries` · `/databases` · `/services` | the [inventory](inventory.md) lists, read only (every role): `?q=` searches every column, `?name=` and `?server=` match exactly (any case), `?applicationId=`, `?productId=`, `?removed=true` adds the removed items, `?limit=` (1000 by default, up to 10000) and `?offset=`; a response with more has `next`, the offset to ask for |
 
@@ -98,5 +100,13 @@ curl -s -H "Authorization: Bearer $TOKEN" "$API/applications?unmapped=true" \
       curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
         -d "{\"productId\": $PRODUCT}" "$API/applications/$id"
     done
+
+# map developers to business units from a CSV of email,business unit (e.g. an HR export)
+while IFS=, read email unit; do
+  BU=$(curl -s -H "Authorization: Bearer $TOKEN" --get --data-urlencode "name=$unit" "$API/business-units" | jq '.items[0].id')
+  DEV=$(curl -s -H "Authorization: Bearer $TOKEN" --get --data-urlencode "email=$email" "$API/developers" | jq '.items[0].id')
+  [ "$BU" != null ] && [ "$DEV" != null ] && curl -s -X PATCH -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" -d "{\"businessUnitId\": $BU}" "$API/developers/$DEV" > /dev/null
+done < developers.csv
 
 ```

@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.21 (2026-11-19)
+
+- **Admin → Developers** pages through the list, 500 a page, with **Previous** and **Next** above and below it
+  (it showed only the first 500 and asked to search for the others).
+- **API**: `GET /api/v1/developers` (`?email=`, `?name=`, `?businessUnitId=`, `?unmapped=true`, `?ignored=true`)
+  and `GET` · `PATCH /api/v1/developers/{id}` to set a developer's `businessUnitId` and `ignored`
+  (administrators and Full API keys), for mapping developers to business units from another source.
+
 ## 0.51.20 (2026-11-19)
 
 - **Application page**: a component whose build failed in the scan's verification but which the sandbox runs deployed

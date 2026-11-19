@@ -6,6 +6,8 @@
     GET    /api/v1/products/{id}             PATCH  /api/v1/products/{id}           DELETE ...
     GET    /api/v1/applications[?unmapped=true&productId=&name=&tag=]
     GET    /api/v1/applications/{id}         PATCH  /api/v1/applications/{id}
+    GET    /api/v1/developers[?email=&name=&businessUnitId=&unmapped=true&ignored=true]
+    GET    /api/v1/developers/{id}           PATCH  /api/v1/developers/{id}   (businessUnitId, ignored)
     GET    /api/v1/audit[?table=&rowId=&limit=]
     GET    /api/v1/inventory/{binaries|databases|services}[?q=&name=&server=&applicationId=&productId=&removed=true
                                                           &limit=&offset=]   (inventory.py, read only)
@@ -39,9 +41,11 @@ FIELDS = {
                 "businessUnitId": "BusinessUnitId"},
     "Application": {"displayName": "DisplayName", "owner": "Owner", "description": "Description",
                     "productId": "ProductId", "retired": "Retired"},
+    "Developer": {"businessUnitId": "BusinessUnitId", "ignored": "Ignored"},
 }
-KEYS = {"BusinessUnit": "BusinessUnitId", "Product": "ProductId", "Application": "ApplicationId"}
-PATHS = {"business-units": "BusinessUnit", "products": "Product", "applications": "Application"}
+KEYS = {"BusinessUnit": "BusinessUnitId", "Product": "ProductId", "Application": "ApplicationId", "Developer": "DeveloperId"}
+PATHS = {"business-units": "BusinessUnit", "products": "Product", "applications": "Application", "developers": "Developer"}
+SCANNED = ("Application", "Developer")      # rows the scans create: no POST, PUT or DELETE
 INVENTORY = {"binaries": "binary", "databases": "database", "services": "service"}
 
 
@@ -178,9 +182,9 @@ class Api:
         if len(parts) == 1:
             if method == "GET":
                 return _json(200, self.list(conn, table, q))
-            if method == "POST" and table != "Application":
+            if method == "POST" and table not in SCANNED:
                 return _json(201, self.create(conn, a, table, data))
-            raise ApiError(405, "method_not_allowed", "applications are created by scans")
+            raise ApiError(405, "method_not_allowed", f"{parts[0]} are created by scans")
         if not re.fullmatch(r"\d{1,9}", parts[1]):
             raise ApiError(404, "not_found", "ids are numbers")
         ident = int(parts[1])
@@ -188,10 +192,10 @@ class Api:
             return _json(200, self.get(conn, table, ident))
         if method in ("PATCH", "PUT"):
             return _json(200, self.update(conn, a, table, ident, data, replace=method == "PUT"))
-        if method == "DELETE" and table != "Application":
+        if method == "DELETE" and table not in SCANNED:
             self.delete(conn, a, table, ident)
             return Response(204, "", ctype="application/json; charset=utf-8")
-        raise ApiError(405, "method_not_allowed", "use GET, PATCH" + ("" if table == "Application" else ", PUT or DELETE"))
+        raise ApiError(405, "method_not_allowed", "use GET, PATCH" + ("" if table in SCANNED else ", PUT or DELETE"))
 
     # -- reads ----------------------------------------------------------------------------------
 
@@ -207,8 +211,11 @@ class Api:
                        "OUTER APPLY (SELECT TOP (1) aa.Rating, aa.Score, aa.AssessedAt "
                        "FROM cz.ApplicationAssessment aa WHERE aa.ApplicationId = a.ApplicationId "
                        "ORDER BY aa.AssessedAt DESC, aa.AssessmentId DESC) x",
+        "Developer": "SELECT d.DeveloperId AS Id, d.Email, d.Name, d.BusinessUnitId, b.Name AS BusinessUnitName, d.Ignored, "
+                     "d.FirstSeenAt, d.LastCommitAt FROM cz.Developer d "
+                     "LEFT JOIN cz.BusinessUnit b ON b.BusinessUnitId = d.BusinessUnitId",
     }
-    ALIAS = {"BusinessUnit": "b", "Product": "p", "Application": "a"}
+    ALIAS = {"BusinessUnit": "b", "Product": "p", "Application": "a", "Developer": "d"}
 
     def list(self, conn, table: str, q: dict) -> dict:
         where, params, tag = [], [], None
@@ -230,7 +237,19 @@ class Api:
                 where.append("a.Retired = 0")
             if q.get("tag"):                     # tags are matched without regard to case, in Python below
                 tag = q["tag"][0]
-        sql = self.SELECT[table] + (" WHERE " + " AND ".join(where) if where else "") + f" ORDER BY {al}.Name"
+        if table == "Developer":
+            if q.get("email"):
+                where.append("d.Email = %s")
+                params.append(q["email"][0].strip().lower()[:256])
+            if q.get("businessUnitId"):
+                where.append("d.BusinessUnitId = %s")
+                params.append(_int(q["businessUnitId"][0], "businessUnitId"))
+            if q.get("unmapped", [""])[0].lower() == "true":
+                where.append("d.BusinessUnitId IS NULL")
+            if q.get("ignored", ["false"])[0].lower() != "true":
+                where.append("d.Ignored = 0")
+        order = "COALESCE(d.Name, d.Email), d.Email" if table == "Developer" else f"{al}.Name"
+        sql = self.SELECT[table] + (" WHERE " + " AND ".join(where) if where else "") + f" ORDER BY {order}"
         cur = conn.cursor(as_dict=True)
         cur.execute(sql, tuple(params) or None)
         rows = [r for r in cur.fetchall() if tag is None or has_tag(r.get("Tags"), tag)]
@@ -311,16 +330,16 @@ class Api:
         out = {}
         for k, col in fields.items():
             if k not in data:
-                if replace and col != "Retired":
+                if replace and col not in ("Retired", "Ignored"):
                     out[col] = None
                 continue
             v = data[k]
             if col in ("ProductId", "BusinessUnitId"):
                 if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1):
                     raise ApiError(400, "invalid_field", f"{k} must be an id or null")
-            elif col == "Retired":
+            elif col in ("Retired", "Ignored"):
                 if not isinstance(v, bool):
-                    raise ApiError(400, "invalid_field", "retired must be true or false")
+                    raise ApiError(400, "invalid_field", f"{k} must be true or false")
             else:
                 if v is not None and not isinstance(v, str):
                     raise ApiError(400, "invalid_field", f"{k} must be a string or null")
@@ -330,7 +349,7 @@ class Api:
                 if col == "InfoUrl" and v and not URL_RE.fullmatch(v):
                     raise ApiError(400, "invalid_field", "infoUrl must be a plain https:// address")
             out[col] = v
-        if "Name" in out and not out["Name"] or (replace and table != "Application" and not out.get("Name")):
+        if "Name" in out and not out["Name"] or (replace and table not in SCANNED and not out.get("Name")):
             raise ApiError(400, "invalid_field", "name is required")
         return out
 
@@ -366,6 +385,8 @@ class Api:
             return
         if table == "BusinessUnit":
             self._deny("only administrators change business units")
+        if table == "Developer":
+            self._deny("only administrators map developers")
         if ident is None:                                   # a new product
             if not a.can_create_product(vals.get("BusinessUnitId")):
                 self._deny("pick one of your business units (businessUnitId)")
@@ -397,8 +418,8 @@ class Api:
         return self.get(conn, table, ident)
 
     def update(self, conn, a: Access, table: str, ident: int, data: dict, replace: bool = False) -> dict:
-        if table == "Application" and replace:
-            raise ApiError(405, "method_not_allowed", "use PATCH for applications")
+        if table in SCANNED and replace:
+            raise ApiError(405, "method_not_allowed", "use PATCH for applications and developers")
         vals = self._values(table, data, replace)
         if not vals:
             return self.get(conn, table, ident)

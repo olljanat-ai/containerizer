@@ -142,7 +142,9 @@ def route(adm, conn, s, a, method: str, parts: list[str], q: dict, form: dict) -
     elif sub == "projects":
         body = projects_view(adm, s, conn)
     else:
-        body = developers_view(adm, s, m, q.get("show", ["all"])[0], q.get("q", [""])[0][:100])
+        page_no = q.get("page", ["1"])[0]
+        body = developers_view(adm, s, m, q.get("show", ["all"])[0], q.get("q", [""])[0][:100],
+                               int(page_no) if page_no.isdigit() and len(page_no) < 7 else 1)
     return Response(200, adm._shell(s, a, "Developers", TAB, nav + body, q.get("msg", [""])[0][:300]))
 
 
@@ -190,7 +192,21 @@ def _repo_link(r: dict) -> str:
     return name
 
 
-def developers_view(adm, s, m: Model, show: str, text: str) -> str:
+def _pager(show: str, text: str, page_no: int, pages: int, total: int) -> str:
+    """Previous and Next, with which developers of how many this page shows (ROWS a page)."""
+    if pages <= 1:
+        return ""
+    def link(n: int, label: str) -> str:
+        if n < 1 or n > pages:
+            return f"<span class='muted'>{label}</span>"
+        return f"<a href='/admin/developers?{e(urlencode({'show': show, 'q': text, 'page': n}))}'>{label}</a>"
+    first = (page_no - 1) * ROWS + 1
+    return (f"<nav class='pager small' aria-label='Pages'>{link(page_no - 1, '← Previous')} · "
+            f"page {page_no} of {pages} ({first:,}–{min(page_no * ROWS, total):,} of {total:,}) · "
+            f"{link(page_no + 1, 'Next →')}</nav>")
+
+
+def developers_view(adm, s, m: Model, show: str, text: str, page_no: int = 1) -> str:
     show = show if show in ("all", "unmapped", "ignored") else "all"
     by_dev = m.links_of_dev()
     sugg = m.dev_suggestions()
@@ -210,7 +226,9 @@ def developers_view(adm, s, m: Model, show: str, text: str) -> str:
                 or (d["BusinessUnitId"] is not None and t in m.bus.get(d["BusinessUnitId"], "").lower())
                 or any(t in _repo_name(m.repos[x["RepositoryId"]]).lower() for x in by_dev.get(d["DeveloperId"], [])
                        if x["RepositoryId"] in m.repos)]
-    shown = devs[:ROWS]
+    pages = max(1, -(-len(devs) // ROWS))
+    page_no = min(max(page_no, 1), pages)
+    shown = devs[(page_no - 1) * ROWS:page_no * ROWS]
     sure = [d for d in m.devs.values() if not d["Ignored"] and d["BusinessUnitId"] is None
             and (x := sugg.get(d["DeveloperId"])) and x.sure]
     rows = []
@@ -253,24 +271,23 @@ def developers_view(adm, s, m: Model, show: str, text: str) -> str:
     if not m.devs:
         return intro + ("<p class='muted'>No developers yet. They appear after the next run of an "
                         "<a href='/admin/scans'>organization scan</a> (a discovery run is enough).</p>")
-    more = (f"<p class='muted small'>The first {ROWS} of {len(devs)} are shown: search for the others.</p>"
-            if len(devs) > ROWS else "")
+    more = _pager(show, text, page_no, pages, len(devs))
     if not m.bus:
         save = "<p class='muted'>Create a <a href='/admin/business-units'>business unit</a> first.</p>"
     else:
         save = "<div class='formrow'><button>Save changes</button></div>"
     table = (f"<form method='post' action='/admin/developers/save'>{adm._csrf(s)}"
-             f"<input type='hidden' name='back' value='{e(urlencode({'show': show, 'q': text}))}'>{save}"
+             f"<input type='hidden' name='back' value='{e(urlencode({'show': show, 'q': text, 'page': page_no}))}'>{save}"
              f"<table class='devs'><thead><tr><th>Developer</th><th>Business unit</th><th>Suggested</th>"
              f"<th>Repositories <span class='muted small'>(commits)</span></th><th>Commits</th><th>Last commit</th>"
              f"<th>Ignore</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan=7 class=muted>Nobody here.</td></tr>'}"
              f"</tbody></table>{save if rows else ''}</form>")
-    return intro + apply + f"<nav class='chips'>{filters}</nav>" + search + more + table
+    return intro + apply + f"<nav class='chips'>{filters}</nav>" + search + more + table + more
 
 
 def save(conn, form: dict) -> Response:
     back = parse_qs(form.get("back", [""])[0][:300])
-    extra = {k: back[k][0][:100] for k in ("show", "q") if back.get(k)}
+    extra = {k: back[k][0][:100] for k in ("show", "q", "page") if back.get(k)}
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT BusinessUnitId FROM cz.BusinessUnit")
     bus = {r["BusinessUnitId"] for r in cur.fetchall()}

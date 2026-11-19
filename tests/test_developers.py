@@ -410,3 +410,74 @@ def test_schema_has_the_tables_and_the_procedure():
               "VALUES (50)"):
         assert x in sql
     assert json.dumps(ad.VIEWS)
+
+
+def test_the_list_pages_with_previous_and_next(monkeypatch):
+    from containerizer import admin_developers
+    monkeypatch.setattr(admin_developers, "ROWS", 2)
+    adm, sid = make_admin(FakeConn())
+    one = get(adm, sid, "/admin/developers").body
+    two = get(adm, sid, "/admin/developers?page=2").body
+    first = re.findall(r"<b>([^<]+)</b><div class='muted small'>", one)
+    second = re.findall(r"<b>([^<]+)</b><div class='muted small'>", two)
+    assert len(first) == 2 and len(second) >= 1 and not set(first) & set(second)
+    assert "page 1 of" in one and "page=2" in one and "search for the others" not in one
+    assert "page 2 of" in two and "page=1" in two
+    assert "name='back' value='show=all&amp;q=&amp;page=2'" in two
+    assert "page 1 of" in get(adm, sid, "/admin/developers?page=x").body
+
+
+def test_the_api_maps_developers_to_business_units():
+    """GET /api/v1/developers (filters) and PATCH {businessUnitId, ignored}: administrators only; no POST, PUT or DELETE."""
+    import json as _json
+    import pytest
+    from containerizer.api import Api, ApiError
+    from containerizer.roles import Access
+
+    class Cur:
+        def __init__(self, log, rows):
+            self.log, self.rows, self.rowcount = log, rows, 1
+
+        def execute(self, sql, params=None):
+            self.log.append((sql, params))
+
+        def fetchall(self):
+            return self.rows
+
+        def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+    class Conn:
+        def __init__(self):
+            self.log = []
+
+        def cursor(self, as_dict=False):
+            return Cur(self.log, [{"Id": 4, "Email": "john.doe@example.com", "Name": "John Doe", "BusinessUnitId": 1,
+                                   "BusinessUnitName": "Retail", "Ignored": False, "FirstSeenAt": None, "LastCommitAt": None}])
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+    api, conn = Api(None, "", [], lambda: None), Conn()
+    r = api.route(conn, "GET", "/api/v1/developers", {"email": ["John.Doe@Example.com "], "unmapped": ["true"]}, None)
+    sql, params = conn.log[-1]
+    assert "d.Email = %s" in sql and "d.BusinessUnitId IS NULL" in sql and "d.Ignored = 0" in sql
+    assert params == ("john.doe@example.com",) and "ORDER BY COALESCE(d.Name, d.Email)" in sql
+    assert _json.loads(r.body)["items"][0]["businessUnitName"] == "Retail"
+    r = api.route(conn, "PATCH", "/api/v1/developers/4", {}, {"businessUnitId": 1, "ignored": False})
+    assert r.status == 200
+    assert any(s.startswith("UPDATE cz.Developer SET BusinessUnitId = %s, Ignored = %s WHERE DeveloperId = %s")
+               and p == (1, False, 4) for s, p in conn.log)
+    for method, path, data, status in (("POST", "/api/v1/developers", {}, 405), ("DELETE", "/api/v1/developers/4", None, 405),
+                                       ("PUT", "/api/v1/developers/4", {"businessUnitId": 1}, 405),
+                                       ("PATCH", "/api/v1/developers/4", {"email": "x"}, 400),
+                                       ("PATCH", "/api/v1/developers/4", {"ignored": "yes"}, 400)):
+        with pytest.raises(ApiError) as ex:
+            api.route(conn, method, path, {}, data)
+        assert ex.value.status == status, (method, path)
+    with pytest.raises(ApiError) as ex:            # a product owner or an operator: not theirs to map
+        api.route(conn, "PATCH", "/api/v1/developers/4", {}, {"businessUnitId": 1}, Access(admin=False))
+    assert ex.value.status == 403
