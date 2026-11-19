@@ -231,6 +231,12 @@ to addresses in those sets (and to the networks of network rules), on the rule's
 address nobody resolved through the filter, an address of a name that is not allowed, or another port is
 dropped and logged.
 
+An address stays allowed for a day after the filter first saw it, and every change of the rules starts the sets
+empty; the next lookup of the name puts its address back. For that the filter keeps an answer in its cache for
+at most 10 seconds (it adds addresses only from answers of the DNS servers, not from its cache) and empties the
+cache whenever the sets are emptied. A client that keeps using an address it looked up long before (its own DNS
+cache) is dropped until it looks the name up again.
+
 **Admin → Firewall** (administrators only):
 
 - **Allow** a name (it covers its subdomains: `nuget.org` also allows `api.nuget.org`) or a network

@@ -8,6 +8,21 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.27 (2026-11-19)
+
+- **Builds timed out reaching an allowed name** (`error NU1301: ... 'GET https://api.nuget.org/v3/index.json' has
+  timed out`, for minutes, while the name was allowed and resolved). The firewall allows the addresses the DNS
+  filter puts into its sets, and dnsmasq adds them only from an answer of the DNS servers, never from its cache
+  (checked with dnsmasq 2.91). Two cases left a name resolving to an address the firewall dropped until the DNS
+  record's own TTL ran out:
+  - A set forgets an address a day after it was first added (adding it again does not extend that), also while
+    the name is still in the cache. The filter now caches an answer for at most 10 seconds, so the next lookup
+    puts the address back.
+  - Turning incoming connections to the results database on or off loaded the firewall, which empties the sets,
+    without emptying the cache. The cache is emptied now whenever the sets are.
+
+  An appliance takes the new DNS setting within five minutes of the update (the filter restarts once).
+
 ## 0.51.26 (2026-11-19)
 
 - **Out-of-support Node.js and Java versions no longer keep an application at B.** An application is rated by
