@@ -8,6 +8,10 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.23 (2026-11-19)
+
+- **Admin → Developers** has a **With a business unit** filter: the developers already mapped to a business unit.
+
 ## 0.51.22 (2026-11-19)
 
 - **Inventory → External services** lists each service (host and port) once, with how many applications use it and
