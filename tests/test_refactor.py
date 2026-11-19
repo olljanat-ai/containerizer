@@ -1481,12 +1481,42 @@ def test_make_it_a_moves_only_data_no_volume_can_hold():
     """Data on a persistent volume does not keep an application from A (#249): Make it A does not move it."""
     from containerizer import refactor as rf
     placed = {"name": "Web", "tier": "server", "verdict": "config", "stateless": False, "state_unplaced": False,
-              "state": [{"title": "Embedded file database"}], "findings": []}
+              "state": [{"title": "Embedded file database"}], "findings": [], "project": "src/Web/Web.csproj"}
     lost = {**placed, "name": "Idx", "state_unplaced": True, "state": [{"title": "Local Lucene index"}]}
     assert rf.rating_a_components({"components": [placed]}) == []
     assert [c["name"] for c in rf.rating_a_components({"components": [placed, lost]})] == ["Idx"]
     assert rf.still_stateful({"components": [placed, lost]}) == [{"component": "Idx", "state": ["Local Lucene index"]}]
     assert [c["name"] for c in rf.stateful_components({"components": [placed, lost]})] == ["Web", "Idx"]  # goal stateless
+    # the move to SQL Server is written for .NET: a Node.js component's is not ordered (the LLM saw package.json
+    # alone, swapped better-sqlite3 for mssql there and left the code that imports it)
+    node = {**lost, "name": "api", "project": "package.json", "state": [{"id": "node-embedded-db-local", "title": "Embedded file database"}],
+            "findings": [{"id": "node-embedded-db-local", "severity": "config", "title": "Embedded file database",
+                          "fix": "Mount a volume", "evidence": ["package.json: better-sqlite3"]}]}
+    assert rf.rating_a_components({"components": [node]}) == [] and not rf.state_movable(node) and rf.state_movable(lost)
+    assert rf.plan_tasks([node], for_a=True)[0] == []
+    with pytest.raises(rf.RefactorError, match="nothing to change"):
+        rf.build_payload({"name": "x", "rating": "B", "components": [node]}, {"type": "git-url", "url": "https://x/y"}, "a" * 40,
+                         goal="rating-a")
+
+
+def test_an_edit_that_breaks_a_json_file_is_refused(tmp_path):
+    """An edit with a literal \\n in package.json: the scan could not read the project any more and the patched
+    application rated E. The answer is refused (and asked again with the error) instead."""
+    from containerizer import refactor as rf
+    (tmp_path / "package.json").write_text('{\n  "dependencies": {\n    "better-sqlite3": "^12.9.0",\n    "csv-parse": "^6.2.1"\n  }\n}\n')
+    bad = {"edits": [{"file": "package.json", "search": '    "better-sqlite3": "^12.9.0",\n    "csv-parse": "^6.2.1"',
+                      "replace": '\n    "csv-parse": "^6.2.1",\\n    "mssql": "^10.0.0",'}]}
+    changes, errors = rf.apply_answer(tmp_path, bad, ["package.json"], None)
+    assert not changes and "not valid JSON after the edits" in errors[0]
+    assert "better-sqlite3" in (tmp_path / "package.json").read_text()          # nothing written
+    good = {"edits": [{"file": "package.json", "search": '"csv-parse": "^6.2.1"', "replace": '"csv-parse": "^6.2.2"'}]}
+    changes, errors = rf.apply_answer(tmp_path, good, ["package.json"], None)
+    assert changes and not errors
+    # a settings file with comments was not strict JSON before: not judged
+    (tmp_path / "appsettings.json").write_text('{\n  // comment\n  "A": 1\n}\n')
+    changes, errors = rf.apply_answer(tmp_path, {"edits": [{"file": "appsettings.json", "search": '"A": 1', "replace": '"A": 2'}]},
+                                      ["appsettings.json"], None)
+    assert changes and not errors
 
 
 def test_window_skips_evidence_without_a_line():

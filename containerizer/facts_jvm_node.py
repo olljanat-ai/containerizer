@@ -408,3 +408,160 @@ def node_facts(repo, c, facts: dict) -> None:
         sec = [k for k in merged if SECRET_LEAF.search(k.split(".")[-1].replace("_", ""))]
         if sec:
             facts["node_config_secrets"] = sorted(sec)
+    dbs = node_db_files(p)
+    if dbs:
+        facts["node_db_files"] = dbs          # where the embedded database's file is (generate.node_db_places)
+
+
+# --------------------------------------------------------------------------- Node.js: the embedded database's file
+
+# Packages that keep the data in a file (or folder) the code names when it opens the database. SQLite opens its
+# file through a symbolic link and keeps its journal beside the real file; the others (LowDB writes a temporary
+# file and renames it over the path, LevelDB wants a folder) need the folder itself on the volume.
+NODE_DB_PKG = re.compile(r"^((@[\w.-]+/)?sqlite3|better-sqlite3|sqlite|@journeyapps/sqlcipher|lowdb|nedb|@seald-io/nedb|"
+                         r"nedb-promises|node-json-db|lokijs|level|classic-level|duckdb|typeorm|sequelize|knex)$")
+NODE_SQLITE_PKG = re.compile(r"^((@[\w.-]+/)?sqlite3|better-sqlite3|sqlite|@journeyapps/sqlcipher)$")
+NODE_DB_EXT = re.compile(r"\.(db3?|sqlite3?|nedb|duckdb)$", re.I)
+NODE_SQLITE_EXT = re.compile(r"\.(db3?|sqlite3?)$", re.I)
+# new Database(<path>), new sqlite3.Database(<path>), require('better-sqlite3')(<path>), new Datastore({filename:
+# <path>}), new JSONFile(<path>), new Level(<path>); and the settings of sqlite's open(), TypeORM, Sequelize and
+# knex (filename:, storage:, database:), which count only with a database file's extension
+NODE_DB_OPEN = re.compile(r"""new\s+(?:[\w$]+\.)?(?P<ctor>Database|JSONFile(?:Sync)?|Level|ClassicLevel)\s*\(\s*
+                              |require\(\s*['"](?P<req>better-sqlite3|level|classic-level)['"]\s*\)\s*\(\s*
+                              |\bJSONFile(?:Sync)?Preset\s*\(\s*
+                              |\b(?P<key>filename|storage|database)\s*:\s*""", re.X)
+NODE_ENV = re.compile(r"process\.env\.([A-Za-z_]\w*)|process\.env\[\s*['\"]([A-Za-z_]\w*)['\"]\s*\]")
+NODE_SRC = (".js", ".cjs", ".mjs", ".ts", ".cts", ".mts")
+NODE_SKIP = {"node_modules", ".git", "dist", "build", "out", "coverage", "test", "tests", "__tests__", "spec", ".next",
+             "public", "static", "migrations"}
+NODE_DB_MAX_FILES = 1500
+
+
+def _js_arg(text: str, start: int, limit: int = 400) -> str:
+    """The expression that starts at `start`, up to the `,`, `)` or `}` that ends it (strings and brackets kept
+    whole)."""
+    depth, quote, i = 0, "", start
+    end = min(len(text), start + limit)
+    while i < end:
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 1
+            elif ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch in ",;\n" and depth == 0:
+            break
+        i += 1
+    return text[start:i].strip()
+
+
+_JS_STR = r"""(?:'([^'\\$]*)'|"([^"\\$]*)"|`([^`\\$]*)`)"""
+_JS_BASE = r"(?P<base>__dirname|import\.meta\.dirname|process\.cwd\(\))"
+
+
+def _js_const(text: str, name: str) -> str | None:
+    m = re.search(r"\b(?:const|let|var)\s+" + re.escape(name) + r"\s*(?::[^=\n]+)?=\s*", text)
+    return _js_arg(text, m.end()) if m else None
+
+
+def _js_path(expr: str, text: str = "", depth: int = 0) -> tuple[str, str] | None:
+    """(base, path) of a path expression: base 'cwd' or 'dir' (the folder of the file it is written in). A string,
+    path.join/resolve of strings (from __dirname, process.cwd() or a constant of the file that is such a path),
+    __dirname + '/x', `${__dirname}/x`."""
+    expr = expr.strip()
+    m = re.fullmatch(_JS_STR, expr)
+    if m:
+        return "cwd", next(g for g in m.groups() if g is not None)
+    if re.fullmatch(_JS_BASE, expr):
+        return ("cwd" if expr.startswith("process") else "dir"), "."
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", expr) and depth < 3:
+        val = _js_const(text, expr)
+        return _js_path(val, text, depth + 1) if val else None
+    m = re.fullmatch(r"(?:path\.)?(?:join|resolve)\s*\((.*)\)", expr, re.S)
+    if m:
+        parts = [_js_path(x, text, depth + 1) for x in re.split(r",(?![^(]*\))", m.group(1))]
+        if not parts or not all(parts) or any(b == "dir" for b, _ in parts[1:]):
+            return None
+        return parts[0][0], "/".join(v for _, v in parts)
+    m = re.fullmatch(_JS_BASE + r"\s*\+\s*" + _JS_STR, expr)
+    if m:
+        return ("cwd" if m.group("base").startswith("process") else "dir"), "." + "/" + next(
+            g for g in m.groups()[1:] if g is not None).lstrip("/")
+    m = re.fullmatch(r"`\$\{" + _JS_BASE + r"\}/([^`$\\]+)`", expr)
+    if m:
+        return ("cwd" if m.group("base").startswith("process") else "dir"), m.group(2)
+    return None
+
+
+def _js_db_expr(text: str, expr: str, depth: int = 0) -> tuple[str | None, tuple[str, str] | None]:
+    """(environment variable, path) a database path expression names: process.env.X, process.env.X || <path>, a
+    path, or a constant of the same file that is one of those."""
+    expr = expr.strip()
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", expr) and depth < 2:
+        val = _js_const(text, expr)
+        return _js_db_expr(text, val, depth + 1) if val else (None, None)
+    env = NODE_ENV.match(expr)
+    if env:
+        rest = re.match(r"\s*(?:\|\||\?\?)\s*(.+)$", expr[env.end():], re.S)
+        return env.group(1) or env.group(2), _js_path(rest.group(1), text) if rest else None
+    return None, _js_path(expr, text)
+
+
+def node_db_files(p) -> list[dict]:
+    """Where a Node.js project's code opens its embedded database: one entry per file it names, {"rel": the path
+    from the project folder (absolute: as written), "env": the environment variable that sets it (when the code
+    reads one), "sqlite": a SQLite file, "exists": the repository has that file, "shared": its folder holds other
+    files of the repository}. Empty when the project has no such package or the code names no file this reads."""
+    import posixpath
+    pkgs = {n for n in p.packages if n not in p.dev_packages}
+    if not any(NODE_DB_PKG.match(n) for n in pkgs):
+        return []
+    sqlite_pkg = any(NODE_SQLITE_PKG.match(n) for n in pkgs)
+    out: dict[tuple, dict] = {}
+    seen = 0
+    for path in sorted(p.dir.rglob("*")):
+        rel_parts = path.relative_to(p.dir).parts
+        if path.suffix.lower() not in NODE_SRC or any(x in NODE_SKIP for x in rel_parts[:-1]) \
+                or re.search(r"\.(test|spec|d)\.[cm]?[jt]s$", path.name) or path.is_symlink() or not path.is_file():
+            continue
+        seen += 1
+        if seen > NODE_DB_MAX_FILES:
+            break
+        try:
+            if path.stat().st_size > 400_000:
+                continue
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for m in NODE_DB_OPEN.finditer(text):
+            env, where = _js_db_expr(text, _js_arg(text, m.end()))
+            if where is None and not env:
+                continue
+            raw = where[1] if where else ""
+            if raw in (":memory:", "") and not env or raw.startswith(("file:", "http")):
+                continue
+            if m.group("key") and not (NODE_DB_EXT.search(raw) or (env and re.search(r"DB|SQLITE|DATABASE", env))):
+                continue                    # filename: 'error.log' of a logger, database: 'shop' of a server
+            if raw.startswith("/") or not where:
+                rel = raw
+            else:
+                base = "" if where[0] == "cwd" else "/".join(rel_parts[:-1])
+                rel = posixpath.normpath(posixpath.join(base, raw))
+            ctor = m.group("ctor") or ""
+            sqlite = bool(NODE_SQLITE_EXT.search(raw)) or (sqlite_pkg and (ctor == "Database" or m.group("req") == "better-sqlite3")
+                                                             and not re.search(r"\.(json|duckdb)$", raw, re.I))
+            target = p.dir / rel if rel and not rel.startswith(("/", "..")) else None
+            folder = target.parent if target else None
+            shared = bool(folder and folder.is_dir() and any(x for x in folder.iterdir() if x != target
+                                                             and x.name not in (".gitkeep", ".gitignore")))
+            out.setdefault((rel, env), {"rel": rel, **({"env": env} if env else {}), "sqlite": sqlite,
+                                        "exists": bool(target and target.exists()), "shared": shared})
+    return list(out.values())[:8]

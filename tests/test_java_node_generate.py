@@ -446,3 +446,63 @@ def test_node_spa_finds_the_index_html_its_build_wrote(tmp_path):
     # the usual folder still wins
     p, site = run(["dist/index.html", "other/index.html"], "dist")
     assert p.returncode == 0 and (site / "index.html").exists() and "the site is" not in p.stderr
+
+
+SQLITE_APP = {"name": "svc", "type": "module", "scripts": {"start": "node server.js"},
+              "dependencies": {"express": "4", "better-sqlite3": "^12.9.0"}}
+
+
+def test_node_sqlite_file_in_the_app_folder_is_a_link_to_the_volume(tmp_path):
+    """A Node.js app with an embedded SQLite file runs as it is: the file its code opens becomes a symbolic link to
+    the volume. Without knowing where the file is it rated B, and Make it A tried to move it to SQL Server."""
+    node(tmp_path, "", SQLITE_APP, {"server.js": "import './modules/dbusers.js';\n" + SERVER, "modules/dbusers.js": """
+        import Database from 'better-sqlite3';
+        import path from 'node:path';
+        const __dirname = path.dirname(fileURLToPath(import.meta.url));
+        const dbPath = path.join(__dirname, '..', 'data', 'users.db');
+        const db = new Database(dbPath, { fileMustExist: false });
+        """})
+    a, c, plan, df = plan_and_df(tmp_path, "svc")
+    assert c.facts["node_db_files"] == [{"rel": "data/users.db", "sqlite": True, "exists": False, "shared": False}]
+    assert not c.state_unplaced and a.rating == "A"
+    assert plan["state_dirs"] == ["/data"] and plan["single_replica"]
+    assert plan["state_links"] == [{"path": "/app/data/users.db", "target": "/data/users.db"}]
+    assert "RUN mkdir -p '/src/data' && ln -sfn '/data/users.db' '/src/data/users.db'" in df
+    assert df.index("ln -sfn") < df.index("AS final")
+    assert "symbolic link to the volume" in next(r["why"] for r in plan["reasons"] if r["rule"] == "state-volume")
+
+
+def test_node_database_path_from_the_environment_or_its_own_folder(tmp_path):
+    from containerizer.generate import node_db_places
+    # the code reads the path from a variable: set to a file on the volume, no link
+    node(tmp_path, "a/", {**SQLITE_APP, "name": "a"}, {"server.js": SERVER + """
+        const Database = require('better-sqlite3');
+        const db = new Database(process.env.DB_PATH || './app.db');
+        """, ".env.example": "DB_PATH=./app.db\nAPI_TOKEN=x\n"})
+    # LowDB replaces its file: the folder is the volume when the repository keeps nothing else there
+    node(tmp_path, "b/", {"name": "b", "scripts": {"start": "node server.js"}, "dependencies": {"express": "4", "lowdb": "7"}},
+         {"server.js": SERVER + "\nconst db = new Low(new JSONFile(path.join(process.cwd(), 'storage', 'db.json')), {});\n"})
+    # no place: LowDB's file among the code, a SQLite file the repository ships, a path the code computes
+    node(tmp_path, "c/", {"name": "c", "scripts": {"start": "node server.js"}, "dependencies": {"express": "4", "lowdb": "7"}},
+         {"server.js": SERVER + "\nconst adapter = new JSONFile('db.json');\n"})
+    node(tmp_path, "d/", {**SQLITE_APP, "name": "d"}, {"server.js": SERVER + "\nconst db = new Database('seed/shop.db');\n",
+                                                       "seed/shop.db": "SQLite format 3"})
+    node(tmp_path, "e/", {**SQLITE_APP, "name": "e"}, {"server.js": SERVER + """
+        const db = new Database(config.get('db.file'));
+        const log = new winston.transports.File({ filename: 'error.log' });
+        const mem = new Database(':memory:');
+        """})
+    a = assess(tmp_path)
+    by = {c.name: c for c in a.components}
+    plan = make_plan(a, by["a"])
+    assert plan["env"]["DB_PATH"] == "/data/app.db" and plan["state_env"] == ["DB_PATH"] and plan["state_dirs"] == ["/data"]
+    assert "state_links" not in plan and not by["a"].state_unplaced
+    deploy = next(d for d in k8s_manifests(a, by["a"], plan, "registry.example/a:1") if d.get("kind") == "Deployment")
+    env = deploy["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert [e for e in env if e["name"] == "DB_PATH"] == [{"name": "DB_PATH", "value": "/data/app.db"}]
+    plan = make_plan(a, by["b"])
+    assert plan["state_dirs"] == ["/app/storage"] and "state_links" not in plan and not by["b"].state_unplaced
+    assert node_db_places(by["b"], "apps/b") == [{"dir": "/app/apps/b/storage"}]      # a workspace member's folder
+    for name in "cde":
+        assert by[name].state_unplaced, name
+    assert by["d"].facts["node_db_files"][0]["exists"] and "node_db_files" not in by["e"].facts

@@ -614,6 +614,10 @@ def dockerfile_node(plan: dict) -> str:
     writable = writable_dirs(plan)
     if writable:
         lines.append("RUN mkdir -p " + " ".join("/writable" + w for w in writable))
+    for ln in plan.get("state_links") or []:
+        # the embedded database's file, in the read-only app folder: a link to the volume (generate.node_db_places)
+        src = "/src" + ln["path"][len("/app"):]
+        lines.append(f"RUN mkdir -p {_q(src.rsplit('/', 1)[0])} && ln -sfn {_q(ln['target'])} {_q(src)}")
     workdir = "/app" + (f"/{mod}" if mod else "")
     slim = plan.get("base") == "slim"
     lines += ["", f"FROM {node_image('slim' if slim else 'runtime', line)} AS final"]

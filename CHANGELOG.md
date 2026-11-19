@@ -8,6 +8,26 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.29 (2026-11-19)
+
+- **A Node.js application with an embedded database rates A as it is.** The scan did not know where a Node.js
+  application keeps its SQLite (or LowDB, NeDB, LevelDB) file, so no volume could be put there: it rated B, and
+  Make it A tried to move the data to SQL Server. Now the scan reads where the code opens the database
+  (`new Database(...)`, `new sqlite3.Database(...)`, `filename:`, `storage:`, `new JSONFile(...)`, `new Level(...)`;
+  a string, `path.join(__dirname, ...)`, a constant of the file, `process.env.X || ...`) and puts the file on a
+  persistent volume without code changes: the environment variable the code reads is set to a file on the volume;
+  a SQLite file inside the read-only app folder becomes a symbolic link to the volume, made in the image; a file
+  in a folder of its own gets the volume on that folder. It stays B when the code computes the path another way,
+  or when the repository ships the database file (a volume would hide it).
+- **Make it A no longer orders the move to SQL Server for a component that is not .NET.** The move is written
+  for .NET (Entity Framework Core, the project file's packages). For a Node.js component the LLM saw
+  `package.json` alone, replaced `better-sqlite3` with `mssql` there and left the code that imports it: "A by the
+  rules", but `Cannot find package 'better-sqlite3'` when it ran. Such an application says "nothing to change in
+  code" now.
+- **Make it A: an edit that leaves a JSON file invalid is refused** and asked again with the error. An edit with
+  a literal `\n` in `package.json` made the project unreadable ("not a deployable component any more"), and the
+  patched application rated E.
+
 ## 0.51.28 (2026-11-19)
 
 - **LLM queue: jobs that build or verify no longer keep the next jobs from a free LLM.** With **Jobs at once**
