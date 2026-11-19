@@ -532,11 +532,47 @@ def stateful_settings() -> dict:
             "tolerations": list(cfg.get("tolerations") or [])}
 
 
-def state_dirs(c: Component) -> list[str]:
+def node_db_places(c: Component, module: str = "") -> list[dict]:
+    """Where the volume of a Node.js component's embedded database goes, per file its code opens
+    (facts node_db_files), without code changes: {"dir": the folder on the volume} and one of
+    - "env", "value": the code reads the path from an environment variable: it is set to a file in STATE_DIR;
+    - "link", "target": a SQLite file inside the app folder (read-only in the container) becomes a symbolic link
+      to a file in STATE_DIR, made in the image; SQLite opens through it and keeps its journal beside the real file;
+    - neither: the file's own folder is the volume (outside the app folder, or a folder of the app that holds
+      nothing else in the repository).
+    A file this cannot place is left out: one the repository ships (a volume would hide it), or one of a database
+    that replaces its file (LowDB) or is a folder (LevelDB) among the application's own files. `module`: the
+    project's folder in the image, from the app folder (the plan's)."""
+    import posixpath
+    out, names = [], set()
+    home = posixpath.normpath(posixpath.join(APP_DIR, module or "."))
+    for d in (c.facts or {}).get("node_db_files") or []:
+        rel = str(d.get("rel") or "")
+        name = re.sub(r"[^\w.-]", "-", posixpath.basename(rel)) or "app.db"
+        if name in names:
+            name = re.sub(r"[^\w.-]", "-", rel.strip("/").replace("/", "_")) or name
+        names.add(name)
+        path = posixpath.normpath(rel if rel.startswith("/") else posixpath.join(home, rel)) if rel else ""
+        inside = path == APP_DIR or path.startswith(APP_DIR + "/")
+        if d.get("env"):
+            out.append({"dir": STATE_DIR, "env": d["env"], "value": f"{STATE_DIR}/{name}"})
+        elif path and not inside and posixpath.dirname(path) not in ("/", ""):
+            out.append({"dir": posixpath.dirname(path)})
+        elif not path or d.get("exists"):
+            continue
+        elif d.get("sqlite"):
+            out.append({"dir": STATE_DIR, "link": path, "target": f"{STATE_DIR}/{name}"})
+        elif not d.get("shared") and posixpath.dirname(path) != home and not hides_app(posixpath.dirname(path)):
+            out.append({"dir": posixpath.dirname(path)})
+    return out
+
+
+def state_dirs(c: Component, module: str = "") -> list[str]:
     """The folders a component that keeps its own data (findings of rules with `state: local`) keeps it in,
     absolute: the folders its code and configuration write to (facts writable_dirs, without temp, logs and
-    caches), App_Data when the code names data folders under it, and STATE_DIR for an embedded database file
-    that sits in the app folder. Empty for a stateless component, or when the folder is not known."""
+    caches), App_Data when the code names data folders under it, STATE_DIR for an embedded database file
+    that sits in the app folder, and where a Node.js component's embedded database goes (node_db_places).
+    Empty for a stateless component, or when the folder is not known."""
     if getattr(c, "stateless", True):
         return []
     facts = c.facts or {}
@@ -546,6 +582,7 @@ def state_dirs(c: Component) -> list[str]:
         out.add(_writable_abs("App_Data"))
     if facts.get("embedded_db_files"):
         out.add(STATE_DIR)
+    out |= {x["dir"] for x in node_db_places(c, module)}
     return sorted(w for w in out if not hides_app(w))
 
 
@@ -565,7 +602,13 @@ def state_plan(c: Component, plan: dict) -> None:
         return
     plan["single_replica"] = True
     plan["stateful"] = True
-    dirs = state_dirs(c)
+    dirs = state_dirs(c, plan.get("module") or "")
+    for x in node_db_places(c, plan.get("module") or ""):
+        if x.get("env"):
+            plan["env"][x["env"]] = x["value"]
+            plan.setdefault("state_env", []).append(x["env"])
+        elif x.get("link"):
+            plan.setdefault("state_links", []).append({"path": x["link"], "target": x["target"]})
     for key, val in sorted(((c.facts or {}).get("embedded_db_files") or {}).items()):
         name = re.sub(r"[\w\s]*=\s*([\w\-.]+).*", r"\1", val.strip(), count=1)
         var = "ConnectionStrings__" + key
@@ -581,6 +624,8 @@ def state_plan(c: Component, plan: dict) -> None:
                f"changes: one replica, replaced rather than rolled on update{where}"
                + ("; the embedded database file is moved there with an environment variable that overrides its "
                   "connection string" if plan.get("state_env") else "")
+               + ("; the database file the code opens in the app folder (" + ", ".join(x["path"] for x in plan["state_links"])
+                  + ") is a symbolic link to the volume" if plan.get("state_links") else "")
                + ". Scaling out needs the data in a shared service first.", [PV_DOCS])
 
 
@@ -1001,6 +1046,8 @@ def k8s_manifests(a: AppAssessment, c: Component, plan: dict, image: str) -> lis
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     for s in c.facts.get("secret_settings", []) or []:
         key = s.replace(":", "__")          # .NET configuration keys; Java/Node facts are variable names already
+        if key in (plan.get("state_env") or ()):
+            continue            # the embedded database's file, on the volume (state_plan): set in plan["env"]
         secret_keys.append(key)
         env.append({"name": key, "valueFrom": {"secretKeyRef": {"name": secret_name, "key": key, "optional": True}}})
     # settings with release-pipeline tokens (the image blanks them), unless a secret reference or the plan already

@@ -241,7 +241,8 @@ def keeps_from_a(c: dict, f: dict) -> bool:
     component keep its own data where no volume can hold it (the state findings of a `state_unplaced` component)."""
     if f.get("severity") == "refactor":
         return True
-    return bool(c.get("state_unplaced")) and f.get("id") in {s.get("id") for s in c.get("state") or []} - {None}
+    return bool(c.get("state_unplaced")) and state_movable(c) \
+        and f.get("id") in {s.get("id") for s in c.get("state") or []} - {None}
 
 
 def plan_tasks(components: list[dict], include_config: bool = False, for_a: bool = False) -> tuple[list[dict], list[dict]]:
@@ -675,6 +676,14 @@ def stateful_components(doc: dict) -> list[dict]:
             and c.get("tier") in ("server", "platform", None) and c.get("verdict") in ("info", "config", "refactor")]
 
 
+def state_movable(c: dict) -> bool:
+    """Whether the move of a component's embedded database to SQL Server can be ordered: .NET components only.
+    The move is written for them (STATE_GUIDANCE, state_tasks: Entity Framework Core, SqliteConnection, the
+    project file's packages). For a Node.js or Java component the LLM was shown package.json alone, swapped the
+    database package there and left the code that imports it: a patch that cannot start."""
+    return str(c.get("project") or "").lower().endswith(("proj", ".sln"))
+
+
 def unplaced_components(doc: dict) -> list[dict]:
     """Stateful components whose data is in a folder the generator cannot put a volume on (`state_unplaced`): the
     only ones whose data keeps the application from A (one with a volume rates A, marked stateful)."""
@@ -687,11 +696,12 @@ def rating_a_components(doc: dict) -> list[dict]:
     order, once each). The rating is the worst verdict of the server components (AppAssessment.rating), and
     configuration findings rate A: a component with only those, or one that is no server component (a desktop
     client, a tool), is left as it is. Data a volume holds is not moved: that would be a code change A does
-    not need."""
+    not need. Nor is the data of a component the move is not written for (state_movable): that application
+    stays B until its data folder is known."""
     seen, out = set(), []
     blocking = [c for c in doc.get("components") or [] if c.get("verdict") == "refactor"
                 and c.get("tier") in ("server", "platform", None) and plan_tasks([c], for_a=True)[0]]
-    for c in [*blocking, *unplaced_components(doc)]:
+    for c in [*blocking, *[c for c in unplaced_components(doc) if state_movable(c)]]:
         if c.get("name") not in seen:
             seen.add(c.get("name"))
             out.append(c)
@@ -739,16 +749,17 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
                                 "component keeps its own data" + not_sendable(doc))
     if goal == "stateless":
         include_config = True
-        comps = stateful_components(doc)
+        comps = [c for c in stateful_components(doc) if state_movable(c)]
         if not comps:
-            raise RefactorError("nothing to change: no component keeps its own data")
+            raise RefactorError("nothing to change: no .NET component keeps its own data (the move to SQL Server "
+                                "is made for .NET components)")
     if component:
         comps = [c for c in comps if component in (c.get("name"), c.get("project"))]
         if not comps:
             raise RefactorError(f"no component {component!r} in {doc.get('name')}"
                                 + (" that keeps its own data" if goal == "stateless" else ""))
     tasks, skipped = plan_tasks(comps, include_config, for_a=goal == "rating-a")
-    if not tasks and goal == "rating-a" and not any(c.get("state_unplaced") for c in comps):
+    if not tasks and goal == "rating-a" and not any(c.get("state_unplaced") and state_movable(c) for c in comps):
         raise RefactorError("nothing to change: no finding of this application can be fixed in code" + not_sendable(doc))
     if not tasks and goal not in ("stateless", "rating-a"):
         raise RefactorError("nothing to change: no refactor finding (or configuration finding with a file) "
@@ -765,7 +776,7 @@ def build_payload(doc: dict, source: dict, commit: str | None, component: str | 
             "max_calls": int(max_calls), "goal": goal,
             "state": [{"component": c.get("name"), "state": [s.get("title") for s in c.get("state") or []]}
                       for c in comps if c.get("stateless") is False
-                      and (goal != "rating-a" or c.get("state_unplaced"))],
+                      and state_movable(c) and (goal != "rating-a" or c.get("state_unplaced"))],
             **({"max_passes": MAX_PASSES_A, "max_repairs": MAX_REPAIRS_A, "deploy": True} if goal == "rating-a" else {})}
 
 
@@ -1638,6 +1649,19 @@ def apply_answer(app_root: Path, answer: dict, shown: list[str], project: str | 
                     text = new
                     changes.append({"file": rel, "kind": "package", "detail": f"{act} {name} {ver}".strip()})
             files[rel] = (text, how)
+    for rel, (text, _how) in files.items():
+        # a JSON file that was valid stays valid: an edit with a literal \n in package.json left a project the
+        # scan could no longer read ("not a deployable component any more"), and the application rated E
+        if rel.lower().endswith(".json"):
+            try:
+                json.loads(_read_text(root / rel)[0])
+            except (OSError, ValueError):
+                continue                    # not strict JSON before either (comments in appsettings.json)
+            try:
+                json.loads(text)
+            except ValueError as ex:
+                errors.append(f"{rel} is not valid JSON after the edits ({str(ex)[:120]}): write real line breaks, "
+                              "not \\n, and keep the commas and quotes of the lines around the change")
     if budget is not None and (total := sum(lines_by_file.values())) > budget:
         errors.append(f"the edits change {total} lines (" + ", ".join(f"{f}: {n}" for f, n in lines_by_file.items())
                       + f"), more than the {budget} the findings allow: change only the lines the findings need; "
