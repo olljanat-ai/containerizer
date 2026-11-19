@@ -8,6 +8,17 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.28 (2026-11-19)
+
+- **LLM queue: jobs that build or verify no longer keep the next jobs from a free LLM.** With **Jobs at once**
+  automatic the runner worked on every LLM request at once plus one job, whatever the jobs did: with 3 requests, 4
+  refactoring orders that were all verifying their patches filled it, and the LLM answered nothing until one ended.
+  Now the automatic number counts the jobs by what they do: that many *at the LLM* (asking, waiting for a
+  request, or just started), and beside them the jobs that build, verify or deploy, one per 4 CPUs and 8 GiB of
+  RAM (half of that with the built-in LLM, which answers on the same CPUs; never fewer than before). A job that
+  comes back for the LLM waits for a request there. The LLM queue page shows both numbers. A number set under
+  Settings is one limit for all jobs, as before.
+
 ## 0.51.27 (2026-11-19)
 
 - **Builds timed out reaching an allowed name** (`error NU1301: ... 'GET https://api.nuget.org/v3/index.json' has

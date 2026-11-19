@@ -379,10 +379,14 @@ The queue holds LLM work and other work side by side: a refactoring order spends
 running and assessing its patched copy and deploying its sandbox variant, and a rebuild or an order whose answers
 are reused from other orders makes no LLM call at all. The runner keeps two limits apart:
 
-- **Jobs at once** (LLM queue → Settings; 0, the default: automatic, every LLM request at once of the LLMs in the
-  order plus one): how many jobs it works on at the same time, whatever they do. A build takes CPU and memory, as
-  does the appliance's built-in LLM on a CPU, so the automatic number stays modest; raise it on a big machine with
-  a GPU LLM elsewhere, lower it when builds and the built-in LLM slow each other down.
+- **Jobs at once** (LLM queue → Settings): how many jobs it works on at the same time. With 0, the default, it
+  is automatic and counts the jobs by what they do. *At the LLM* (asking, waiting for a request, or just started):
+  every LLM request at once of the LLMs in the order plus one. *Building, verifying or deploying*, beside those:
+  one job per 4 CPUs and 8 GiB of RAM of the machine (half of that while the appliance's built-in LLM is in the
+  order, which answers on the same CPUs), and never fewer than the first number. So jobs that are busy outside the
+  LLM do not keep the next jobs from an LLM that is free; when they come back for the LLM they wait for a request
+  there. The LLM queue page shows both numbers. A number set here is one limit for all jobs, whatever they do:
+  set it when builds and the built-in LLM slow each other down, or to allow more than the automatic number.
 - **Requests at once** of each LLM (Admin → Source control & LLM, and **Parallel requests** for the built-in LLM
   or the worker's own LLM settings): an LLM call takes one only while it is answered, and gives it back at once. A
   job that builds, verifies or deploys holds none.

@@ -494,8 +494,9 @@ threads as the node has CPUs). Each answers at full speed, so two sockets answer
 hour. The LLM queue lists each server as an LLM of its own (`built-in-0`, `built-in-1`, ... on the LLM queue page)
 and sends one request per server at once (a higher **Parallel requests** setting is shared out between them); a
 job holds a server only while one of its LLM calls is answered, not while it builds or verifies. The LLM queue's
-**Jobs at once** (automatic: the servers' requests plus one) keeps the builds of refactoring orders from crowding
-the CPUs the built-in LLM needs. One server on both sockets instead would read half of its weights across the
+**Jobs at once** (automatic: the servers' requests plus one at the LLM, and beside them one job building or
+verifying per 8 CPUs and 16 GiB of RAM) keeps the builds of refactoring orders from crowding the CPUs the built-in
+LLM needs. One server on both sockets instead would read half of its weights across the
 link between them. With one node, or not enough RAM, it is one server on the whole machine, as before. The
 page shows how it is sized and each server's state. The RAM is shared out between the servers before the slots
 are sized (the table above, per server): 128 GB with two nodes gives two servers of 3 slots.

@@ -4,7 +4,8 @@ A self-hosted LLM on CPUs can take minutes per answer. The queue (cz.LlmJob) hol
 and its runner (`containerizer llm-queue`, a process of its own) works through them when the settings let
 it (Admin → LLM queue: paused, days and hours in UTC, only when the machine is idle, parallel requests,
 jobs at once). A job takes an LLM request only while one of its LLM calls is answered (Slots), so jobs that build,
-verify or deploy do not hold an LLM.
+verify or deploy do not hold an LLM; with Jobs at once automatic they do not hold a job slot of the LLM either
+(Runner.fill: more jobs start while the LLM is free, up to work_room building at once).
 
 Job kinds (JOB_KINDS, `register`): `review`, a component review, `refactor`, a refactoring patch a
 person ordered for a B-rated application (refactor.py, docs/refactoring.md), and `egress`, the review of the
@@ -931,14 +932,47 @@ def plan_lanes(registered: list, builtin: list | None, settings: dict) -> list[d
 
 
 def jobs_at_once(settings: dict, lanes: list[dict]) -> int:
-    """How many jobs the runner works on at once (LlmQueueSettings.JobsAtOnce): the number set, or with 0 (automatic)
-    every LLM request at once of the LLMs in the order plus one, so that a job building or verifying does not keep
-    another from asking while an LLM is free. Builds are heavy on CPU and memory, and compete with a CPU-only
-    built-in LLM: the automatic number stays modest."""
+    """How many jobs the runner works on at once (LlmQueueSettings.JobsAtOnce): the number set, whatever the jobs
+    do. With 0 (automatic) it is the number of jobs *at the LLM* at once (asking, waiting for a request, or just
+    started and about to ask): every LLM request at once of the LLMs in the order plus one, so that one job is
+    ready when a request comes free. The jobs that build, verify or deploy meanwhile are not counted in it:
+    work_room limits those."""
     n = int((settings or {}).get("JobsAtOnce") or 0)
     if n > 0:
         return min(n, JOBS_AT_ONCE_MAX)
     return min(JOBS_AT_ONCE_MAX, max(1, sum(max(0, int(ln["parallel"])) for ln in lanes)) + 1)
+
+
+WORK_CPUS = 4                           # CPUs a job that builds or verifies is given in the automatic number
+WORK_GIB = 8                            # and memory
+
+
+def machine() -> tuple[int, int]:
+    """(CPUs, bytes of RAM; 0 when unknown) of the machine the runner's builds use."""
+    mem = 0
+    try:
+        with open("/proc/meminfo", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("MemTotal:"):
+                    mem = int(line.split()[1]) * 1024
+                    break
+    except (OSError, ValueError, IndexError):
+        pass
+    return os.cpu_count() or 1, mem
+
+
+def work_room(lanes: list[dict]) -> int:
+    """With Jobs at once automatic: how many jobs may build, verify or deploy at once, beside the jobs at the LLM.
+    A build is heavy on CPU and memory: one per WORK_CPUS CPUs and WORK_GIB GiB of RAM, half of that while the
+    appliance's built-in LLM is in the order (it answers on the same CPUs), and never fewer than before this limit
+    was told apart (every LLM request at once plus one)."""
+    cpus, mem = machine()
+    n = cpus // WORK_CPUS
+    if mem:
+        n = min(n, mem // (WORK_GIB * 1024 ** 3))
+    if any(str(ln.get("name") or "").startswith("built-in") for ln in lanes):
+        n //= 2
+    return min(JOBS_AT_ONCE_MAX, max(n, jobs_at_once({}, lanes)))
 
 
 def call_tokens(chars: int) -> int:
@@ -1079,8 +1113,13 @@ class _JobCalls:
             if r.stopping.is_set():
                 raise ai.Cancelled("the queue runner is stopping")
             ai._raise_if_cancelled()
-        lane = r.slots.acquire(row.get("_order", row["JobId"]), call_tokens(chars), check,
-                               on_wait=lambda: r.call_state(row, "waiting"))
+        row["_at_llm"] = row.get("_at_llm", 0) + 1      # waits for or holds a request: not building (Runner.fill)
+        try:
+            lane = r.slots.acquire(row.get("_order", row["JobId"]), call_tokens(chars), check,
+                                   on_wait=lambda: r.call_state(row, "waiting"))
+        except BaseException:
+            row["_at_llm"] -= 1
+            raise
         row.pop("_reserve_until", None)
         try:
             parallel = r.slots.in_progress().get(lane["name"], 1)
@@ -1100,6 +1139,7 @@ class _JobCalls:
                         {"lane": lane["name"], "endpoint": ep, "parallel": parallel, "chars": int(chars),
                          "seconds": _time.monotonic() - t0, "entries": list(used.entries)})
         finally:
+            row["_at_llm"] -= 1
             r.slots.release(lane)
             r.call_state(row, None)
 
@@ -1586,11 +1626,15 @@ class Runner:
             self._ctx = None
 
     def fill(self, pool) -> list:
-        """Start jobs while the settings allow and job slots are free (jobs_at_once), in the queue's order. A job
-        needs no LLM request to start: its calls take one each (Slots). Only a job estimated to need the LLM waits
-        in the queue while every LLM request that would take it is in use or wanted (by calls waiting, or by jobs
-        just started that have not asked yet): the jobs after it that need no LLM start meanwhile. Returns the
-        futures started."""
+        """Start jobs while the settings allow and job slots are free, in the queue's order. A job needs no LLM
+        request to start: its calls take one each (Slots). Only a job estimated to need the LLM waits in the queue
+        while every LLM request that would take it is in use or wanted (by calls waiting, or by jobs just started
+        that have not asked yet): the jobs after it that need no LLM start meanwhile.
+
+        Job slots: with Jobs at once set, that many jobs whatever they do. Automatic: the jobs at the LLM (asking,
+        waiting, or just started) and the jobs that build, verify or deploy have a limit each (jobs_at_once,
+        work_room), so jobs busy outside the LLM do not keep the next ones from it while it is free; the ones that
+        come back for the LLM wait for a request there. Returns the futures started."""
         started = []
         conn = self.connect()
         try:
@@ -1605,11 +1649,23 @@ class Runner:
             lanes = self.lanes(conn, settings)      # each LLM in its order, with its size limit and requests at once
             self.slots.update(lanes)
             room = jobs_at_once(settings, lanes)
+            automatic = not int(settings.get("JobsAtOnce") or 0)
+            wroom = work_room(lanes) if automatic else 0
             now = _time.monotonic()
             with self.lock:
                 busy = len(self.active)
                 reserved = [int(r.get("EstInputTokens") or 0) for r in self.active.values()
                             if r.get("_reserve_until", 0) > now]
+                in_call = sum(1 for r in self.active.values() if r.get("_at_llm", 0) > 0)
+                # at the LLM: in a call (waiting or asking), or just started and about to ask
+                at_llm = sum(1 for r in self.active.values()
+                             if r.get("_at_llm", 0) > 0 or r.get("_reserve_until", 0) > now)
+
+            def slot_free() -> bool:
+                if not automatic:
+                    return busy < room
+                # a job just started builds once it has asked: it counts as one that builds already
+                return busy < JOBS_AT_ONCE_MAX and at_llm < room and busy - in_call < wroom
             spare = self.slots.spare(reserved)
             # "only when idle" is checked before the first job: the runner's own work loads the machine
             ok, why = gate(settings, utcnow(), scans_running(conn), self.load() if not busy else 0.0,
@@ -1621,7 +1677,7 @@ class Runner:
             if why != self.status:
                 self.log(why or "open: taking jobs")
                 self.status = why
-            while ok and not self.stopping.is_set() and busy < room:
+            while ok and not self.stopping.is_set() and slot_free():
                 free = [ln for ln in lanes if spare.get(ln["name"], 0) > 0]
                 # an LLM with a spare request takes the next job of a size it takes; none: only jobs without LLM work.
                 # An overflow LLM (the built-in one last) only the jobs too big for every other LLM.
@@ -1640,6 +1696,7 @@ class Runner:
                 if est:                         # its first call is expected soon: that request is not spare
                     spare[home["name"]] = spare.get(home["name"], 0) - 1
                     row["_reserve_until"] = now + RESERVE_SECONDS
+                    at_llm += 1
                 self._enter_llm(conn)
                 busy += 1
                 self._order += 1

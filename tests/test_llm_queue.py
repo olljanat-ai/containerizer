@@ -838,6 +838,7 @@ def _fill_runner(monkeypatch, lanes, jobs, settings=None, conn=None):
     monkeypatch.setattr(lq, "scans_running", lambda conn: 0)
     monkeypatch.setattr(r, "lanes", lambda conn, settings: lanes)
     monkeypatch.setattr(r, "_enter_llm", lambda conn: None)
+    monkeypatch.setattr(lq, "machine", lambda: (16, 64 * 1024 ** 3))
     r.limits = []
 
     def claim(conn, max_tokens=None, min_tokens=None):
@@ -908,6 +909,67 @@ def test_the_built_in_llm_last_takes_only_what_the_registered_llm_does_not(monke
         assert [x["JobId"] for x in jobs] == [2]
     finally:
         ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_jobs_outside_the_llm_do_not_keep_the_next_jobs_from_it(monkeypatch):
+    """Jobs at once automatic, an LLM with 3 requests: 4 jobs verify their patches and none asks. The LLM is free,
+    so the next jobs start; the limit on those that build is the machine's, and a number set is still one limit."""
+    lanes = [{"name": "llm-1", "settings": {"CONTAINERIZER_MODEL": "m"}, "max_tokens": 0, "parallel": 3, "order": 10}]
+    jobs = [{"JobId": n, "Kind": "refactor", "EstInputTokens": 5000} for n in range(1, 30)]
+    r = _fill_runner(monkeypatch, lanes, jobs)
+    try:
+        monkeypatch.setattr(lq, "machine", lambda: (32, 128 * 1024 ** 3))
+        assert lq.jobs_at_once(lq.DEFAULTS, lanes) == 4 and lq.work_room(lanes) == 8
+        submitted = []
+        pool = SimpleNamespace(submit=lambda fn, row: submitted.append(row) or row)
+        r.fill(pool)
+        assert [x["JobId"] for x in submitted] == [1, 2, 3]            # each about to ask: the LLM's 3 requests
+        for x in submitted:                                            # they asked, and verify their patches now
+            x.pop("_reserve_until")
+        r.fill(pool)
+        assert [x["JobId"] for x in submitted] == [1, 2, 3, 4, 5, 6]   # before: one more, then none until one ended
+        for x in submitted:
+            x.pop("_reserve_until", None)
+        r.fill(pool)
+        assert len(submitted) == 8                                     # 8 building: the machine's limit
+        r.fill(pool)
+        assert len(submitted) == 8
+        submitted[0]["_at_llm"] = 1                                    # one comes back for the LLM: room for a builder
+        r.fill(pool)
+        assert len(submitted) == 9
+        for x in submitted:                                            # all wait at the LLM: none started for it
+            x["_at_llm"] = 1
+            x.pop("_reserve_until", None)
+        r.slots.waiting = [[i, 5000] for i in range(9)]
+        r.fill(pool)
+        assert len(submitted) == 9
+    finally:
+        ai.LISTENERS.remove(r.metrics.llm)
+    # a number set: that many jobs whatever they do, as before
+    jobs = [{"JobId": n, "Kind": "refactor", "EstInputTokens": 5000} for n in range(1, 30)]
+    r = _fill_runner(monkeypatch, lanes, jobs, {"JobsAtOnce": 4})
+    try:
+        submitted = []
+        pool = SimpleNamespace(submit=lambda fn, row: submitted.append(row) or row)
+        for _ in range(3):
+            r.fill(pool)
+            for x in submitted:
+                x.pop("_reserve_until", None)
+        assert len(submitted) == 4
+    finally:
+        ai.LISTENERS.remove(r.metrics.llm)
+
+
+def test_work_room_follows_the_machine(monkeypatch):
+    llm = [{"name": "llm-1", "parallel": 3}]
+    builtin = [{"name": "built-in-0", "parallel": 1}, {"name": "built-in-1", "parallel": 1}]
+    for cpus, gib, lanes, want in ((64, 256, llm, 16), (64, 32, llm, 4), (8, 32, llm, 4), (64, 0, llm, 16),
+                                   (64, 256, builtin, 8), (16, 64, builtin, 3), (1024, 4096, llm, lq.JOBS_AT_ONCE_MAX)):
+        monkeypatch.setattr(lq, "machine", lambda c=cpus, g=gib: (c, g * 1024 ** 3))
+        assert lq.work_room(lanes) == want, (cpus, gib, lanes)
+    monkeypatch.undo()
+    cpus, mem = lq.machine()
+    assert cpus >= 1 and mem >= 0
 
 
 def test_jobs_at_once_default():
@@ -1221,7 +1283,7 @@ def test_the_queue_page_says_asking_only_while_a_call_is_answered(adm):
     llms = body.split("<h2>LLMs</h2>")[1].split("</table>")[0]
     assert "<th class='num'>Asking now</th>" in llms
     assert re.findall(r"<td class='num'>(\d+)</td></tr>", llms) == ["0", "1"]
-    assert "1 LLM call waits for a free request" in body and "3 jobs at once (automatic)" in body
+    assert "1 LLM call waits for a free request" in body and "jobs at once (automatic): 3 at the LLM, up to " in body
 
 
 def test_each_job_thread_asks_its_own_llm():

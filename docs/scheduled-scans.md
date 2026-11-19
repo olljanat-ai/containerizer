@@ -575,7 +575,8 @@ With **Ask the LLM** on, **LLM reviews** chooses when the LLM is asked:
   CPU below the limit (0: the load is not looked at); **Parallel requests**, as many as the worker's own
   LLM answers at once (a registered LLM has its own, see [several LLMs at once](source-control.md#the-llm));
   **Jobs at once**, how many jobs the runner works on at the same time, asking an LLM or building and verifying
-  (0, the default: every LLM request at once plus one); and the **built-in LLM's order** and **calls up to** beside
+  (0, the default: every LLM request at once plus one at the LLM, and beside them as many building or verifying as
+  the machine takes); and the **built-in LLM's order** and **calls up to** beside
   the registered LLMs (the appliance only). The page lists the LLMs in their order with the requests in progress on
   each (**Asking now**): each LLM call of a job goes to the first that takes its size and has a free request, and
   gives it back once answered, so a job that builds or deploys holds no LLM

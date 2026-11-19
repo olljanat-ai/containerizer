@@ -314,7 +314,11 @@ def show(adm, conn, s, a, q: dict, flash: str) -> Response:
     ok, why = lq.gate(settings, now, lq.scans_running(conn), lq.load_per_cpu(), restartplan.holding(llm=True))
     state = "<span class='st st-ok'>Open</span>" if ok else f"<span class='st st-off'>Waiting</span> {e(why)}"
     room = lq.jobs_at_once(stored, ls)
-    state += f" · {room} job{'s' if room != 1 else ''} at once" + ("" if int(stored.get("JobsAtOnce") or 0) else " (automatic)")
+    if int(stored.get("JobsAtOnce") or 0):
+        state += f" · {room} job{'s' if room != 1 else ''} at once"
+    else:
+        state += (f" · jobs at once (automatic): {room} at the LLM, up to {lq.work_room(ls)} building, verifying "
+                  "or deploying")
     waiting = sum(1 for r in active if r["Status"] == "approval")
     if waiting:
         state += f" · <span class='st st-wait'>{waiting} waiting for approval</span>"
@@ -601,8 +605,9 @@ setting under Admin → Source control & LLM)</span></label><input id='Parallel'
 max='16' value='{int(v['Parallel'] or 1)}'>
 <label for='JobsAtOnce'>Jobs at once <span class='muted'>(how many jobs the runner works on at the same time,
 whether they ask an LLM, wait for one, or build, verify and deploy; an LLM call takes a request of an LLM only while
-it is answered. Builds take CPU and memory, as does the built-in LLM. 0: automatic, every LLM request at once plus
-one)</span></label><input id='JobsAtOnce' name='JobsAtOnce' type='number' min='0' max='{lq.JOBS_AT_ONCE_MAX}'
+it is answered. Builds take CPU and memory, as does the built-in LLM. 0: automatic: every LLM request at once plus
+one at the LLM, and beside them as many building, verifying or deploying as the machine takes, one per
+{lq.WORK_CPUS} CPUs and {lq.WORK_GIB} GiB of RAM, half of that with the built-in LLM)</span></label><input id='JobsAtOnce' name='JobsAtOnce' type='number' min='0' max='{lq.JOBS_AT_ONCE_MAX}'
 value='{int(v.get('JobsAtOnce') or 0)}'>
 <label for='LocalOrder'>Built-in LLM beside the registered LLMs: its order <span class='muted'>(the appliance only;
 empty: last, for the calls no registered LLM takes by size)</span></label><input id='LocalOrder' name='LocalOrder' type='number' min='0'
