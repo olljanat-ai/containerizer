@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.20 (2026-11-19)
+
+- **Application page**: a component whose build failed in the scan's verification but which the sandbox runs deployed
+  and healthy (a Make it A order's patched copy, built again after the scan) is no longer reported as failed: no
+  *Not confirmed* note, its *Build and run* cell says it runs in the sandbox, the migration plan puts it in wave 1
+  when it is otherwise ready, and *Try again* no longer lists it as not in the sandbox.
+
 ## 0.51.19 (2026-11-19)
 
 - **Admin → Developers** lists the developers in alphabetical order (by name, or the email address without one)
