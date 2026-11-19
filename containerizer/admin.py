@@ -278,6 +278,9 @@ class Admin:
         if kind == "scan-again":                     # the results page's Try again (scanagain.py): no tab of its own
             from . import scanagain
             return scanagain.route(self, conn, s, a, method, parts, form)
+        if kind == "verify-log":                     # the results page's whole build and run logs: no tab of its own
+            from . import verifylog
+            return verifylog.route(self, conn, s, a, method, parts)
         if kind == "tags":                           # the results page's tags of an application: no tab of its own
             from . import tags
             return tags.route(self, conn, s, a, method, parts, form)

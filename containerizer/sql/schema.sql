@@ -3499,3 +3499,27 @@ GRANT SELECT ON [${schema}].vInventory TO [${schema}_writer];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 60) INSERT [${schema}].SchemaVersion (Version) VALUES (60);
 GO
+
+-- 61: the whole build and run logs of a component whose verification failed (sqlstore.store_verify_logs), per
+-- attempt, gzip, secrets masked: ComponentAssessment.VerifyDetail keeps 2000 characters, often not the error. The
+-- results page links them for administrators and operators (/admin/verify-log/...), read with the admin login:
+-- a log can carry what the build printed, so the reader role has no grant. Only a component's latest scan's are kept.
+IF OBJECT_ID(N'[${schema}].ComponentVerifyLog') IS NULL
+CREATE TABLE [${schema}].ComponentVerifyLog (
+    AssessmentId  int            NOT NULL,
+    ComponentId   int            NOT NULL,
+    Attempt       tinyint        NOT NULL,
+    Stage         nvarchar(10)   NOT NULL CONSTRAINT CK_ComponentVerifyLog_Stage CHECK (Stage IN (N'build', N'run')),
+    Chars         int            NOT NULL,          -- of the log as kept (its end, when it was longer)
+    Truncated     bit            NOT NULL CONSTRAINT DF_ComponentVerifyLog_Truncated DEFAULT 0,
+    LogGz         varbinary(max) NOT NULL,
+    CONSTRAINT PK_ComponentVerifyLog PRIMARY KEY (AssessmentId, ComponentId, Attempt, Stage),
+    CONSTRAINT FK_ComponentVerifyLog_ComponentAssessment FOREIGN KEY (AssessmentId, ComponentId)
+        REFERENCES [${schema}].ComponentAssessment (AssessmentId, ComponentId) ON DELETE CASCADE
+);
+GO
+GRANT SELECT, INSERT, DELETE ON [${schema}].ComponentVerifyLog TO [${schema}_writer];
+GRANT SELECT ON [${schema}].ComponentVerifyLog TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 61) INSERT [${schema}].SchemaVersion (Version) VALUES (61);
+GO

@@ -21,6 +21,12 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   names the hosts whose lookups failed and points at Admin → Firewall (also for `getaddrinfo EAI_AGAIN <host>`,
   which npm's native add-on installs print: `release-assets.githubusercontent.com` for a prebuilt binary,
   `nodejs.org` for node-gyp's headers), or the package feed that refused the sign-in.
+- **The whole build and run log of a failed component, to download.** The scan's verification keeps a log per
+  attempt (`build-1.log`, `run-2.log` beside `build.log` and `run.log` in the work folder): a retry no longer
+  overwrites the log that explained the failure. A component whose build or run failed has them stored with its
+  assessment (schema 61, gzip, secrets masked, at most the last 4 million characters of each, the latest scan's
+  only), and its **Build and run** block on the results page links them under **Whole log**, for administrators
+  and operators. Logs of scans made before this version were not kept: scan the application again.
 
 ## 0.51.29 (2026-11-19)
 
