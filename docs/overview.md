@@ -365,7 +365,9 @@ When the build or the run still fails, the rating stays the one the source code 
 reason outside the application, such as a package feed the scan cannot reach), but the application's page says it
 is not confirmed, the confidence is not counted as confirmed by building and running, and the component is left out
 of the generated files and the sandbox. Its **Build and run** column links to *why*: the component's details show
-the reason (the failure rule, or *no known cause*) and the end of the build or run log.
+the reason (the failure rule, the names whose lookups failed, or *no known cause*) and the errors of the build
+log or the end of the run log. Administrators and operators also get **Whole log** there: the complete log of
+every attempt of that scan (`build, attempt 1`, `run, attempt 2`), secrets masked, to download.
 
 ![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed.png#only-light){ .cz-shot }
 ![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed-dark.png#only-dark){ .cz-shot }

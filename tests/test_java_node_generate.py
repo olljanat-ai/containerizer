@@ -506,3 +506,50 @@ def test_node_database_path_from_the_environment_or_its_own_folder(tmp_path):
     for name in "cde":
         assert by[name].state_unplaced, name
     assert by["d"].facts["node_db_files"][0]["exists"] and "node_db_files" not in by["e"].facts
+
+
+def test_a_failed_build_shows_its_errors_not_dockers_report_of_the_step():
+    """The results page showed 1500 characters of Docker's own ending (the Dockerfile lines of the failed step, a
+    long sed command, "ERROR: failed to solve"): the error itself was cut off."""
+    from containerizer.buildlog import build_tail
+    sed = "RUN find /out -maxdepth 1 -iname 'appsettings*.json' -exec sed -i " + " ".join(f"-e 's/#{{Setting{i}}}#//g'" for i in range(60))
+    log = "\n".join([
+        "#12 2.195   Determining projects to restore...",
+        *[f"#12 {3 + i}.0   Restored /src/Lib{i}/Lib{i}.csproj (in 2 sec)." for i in range(40)],
+        "#12 9.412 /src/App/Worker.cs(14,22): error CS0246: The type or namespace name 'EventLog' could not be found [/src/App/App.csproj]",
+        "#12 9.412 /src/App/Worker.cs(14,22): error CS0246: The type or namespace name 'EventLog' could not be found [/src/App/App.csproj]",
+        "#12 9.500     0 Warning(s)", "#12 9.500     1 Error(s)", "#12 ERROR: process \"/bin/sh -c dotnet restore\" did not complete successfully: exit code: 1",
+        "------", " > [build 5/6] RUN dotnet restore:", "------", "Dockerfile:31", "--------------------",
+        '  29 | >>>     dotnet restore "App/App.csproj" -p:RuntimeIdentifier=linux-x64',
+        '  30 | >>>  && dotnet publish "App/App.csproj" --no-restore -c Release -o /out',
+        "  31 |     " + sed, "--------------------",
+        'ERROR: failed to solve: process "/bin/sh -c dotnet restore ' + "x" * 900 + '" did not complete successfully: exit code: 1'])
+    assert "CS0246" not in log[-1500:]                         # what was shown
+    tail = build_tail(log)
+    assert len(tail) <= 1500 and tail.count("error CS0246") == 1 and "1 Error(s)" in tail
+    assert "failed to solve" not in tail and ">>>" not in tail and "sed -i" not in tail
+    assert build_tail("a\nb\n") == "a\nb" and build_tail("") == ""
+    # nothing but Docker's report: that is shown rather than nothing
+    assert "failed to solve" in build_tail('ERROR: failed to solve: process "x" did not complete successfully')
+
+
+def test_a_build_that_cannot_look_up_a_name_points_at_the_firewall():
+    """better-sqlite3's install: its prebuilt binary and node-gyp's headers come from names the DNS filter refused.
+    The page said "no known cause"."""
+    from containerizer.buildlog import build_tail, hints, unresolved_hosts
+    from containerizer.sqlstore import verify_detail
+    log = "\n".join([
+        "#9 11.57 npm error code 1", "#9 11.57 npm error path /src/node_modules/better-sqlite3",
+        "#9 11.57 npm error command sh -c prebuild-install || node-gyp rebuild --release",
+        "#9 11.57 npm error prebuild-install warn install getaddrinfo EAI_AGAIN release-assets.githubusercontent.com",
+        "#9 11.57 npm error gyp http GET https://nodejs.org/download/release/v24.22.3/node-v24.22.3-headers.tar.gz",
+        "#9 11.57 npm error gyp ERR! stack Error: getaddrinfo EAI_AGAIN nodejs.org",
+        "#9 11.57 npm error gyp ERR! not ok", 'ERROR: failed to solve: process "/bin/sh -c npm install" did not complete'])
+    assert unresolved_hosts(log) == ["release-assets.githubusercontent.com", "nodejs.org"]
+    note = "; ".join(hints(log))
+    assert note.startswith("name lookup failed for release-assets.githubusercontent.com, nodejs.org: allow them on Admin")
+    detail = verify_detail({"status": "build-failed", "attempts": [
+        {"attempt": 1, "stage": "build", "status": "unexplained", "note": note, "log_tail": build_tail(log)}]})
+    assert "Why: name lookup failed for release-assets.githubusercontent.com" in detail and "no known cause" not in detail
+    assert "EAI_AGAIN nodejs.org" in detail and "failed to solve" not in detail
+    assert hints("error CS0246: The type or namespace name could not be found") == []

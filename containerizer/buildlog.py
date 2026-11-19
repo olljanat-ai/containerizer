@@ -18,7 +18,7 @@ HOST_RES = [re.compile(p, re.I) for p in (
     r"[a-z][a-z0-9+.-]*://(?:[^@/\s]*@)?" + HOST,            # https://dl-cdn.alpinelinux.org/alpine/...
     r"Could not resolve host:?\s*'?" + HOST,                 # curl, git, pip
     r"\blookup\s+" + HOST,                                   # Go: lookup proxy.golang.org on 10.0.0.1:53
-    r"\bENOTFOUND\s+" + HOST,                                # npm: getaddrinfo ENOTFOUND registry.npmjs.org
+    r"\b(?:ENOTFOUND|EAI_AGAIN)\s+" + HOST,                  # npm: getaddrinfo ENOTFOUND registry.npmjs.org
     r"\bresolve\s+(?:host\s+)?'?" + HOST,                    # Failed to resolve 'pypi.org'
     r"\bfor\s+" + HOST + r"(?=[:'\"\s]|$)")]                 # Temporary failure resolving / unknown host for x
 
@@ -36,6 +36,38 @@ def error_lines(log: str, limit: int = 1500) -> str:
     errs = [l for l in lines if ERROR_RE.search(l) and not DOCKER_RE.match(l)]
     out = " | ".join(dict.fromkeys(errs))
     return out[-limit:] if errs else " ".join((log or "").split())[-600:]
+
+
+def build_tail(log: str, limit: int = 1500) -> str:
+    """A failed build's log for the results page, about `limit` characters: its lines that name an error (each
+    once, the last ones), then the end of what the build itself printed. Docker ends a failed build with the step
+    of the Dockerfile that failed (">>> dotnet restore ...", "ERROR: failed to solve: process ..."): the last 1500
+    characters of the log were often only that, without the compiler's or NuGet's error."""
+    lines = [l.rstrip() for l in (log or "").splitlines()]
+
+    def key(l: str) -> str:
+        return re.sub(r"^#\d+\s+[\d.]+\s+|^[\d.]+\s+", "", l).strip()
+    own = [l for l in lines if l.strip() and not DOCKER_RE.match(l.strip())
+           and not re.match(r"^(Dockerfile(\.\w+)?:\d+|-{5,}|> \[.*|#\d+ ERROR: process .*)\s*$", l.strip())]
+    seen, errs = set(), []
+    for l in own:
+        if re.search(r"\berror\b|\bERR!|\bFAILURE\b|\bfatal\b", key(l), re.I) and key(l) not in seen:
+            seen.add(key(l))
+            errs.append(l[:600])
+    if not errs:
+        return "\n".join(own or lines)[-limit:]
+    head = errs[-1:]
+    for l in reversed(errs[:-1]):                       # the last errors that fit in two thirds
+        if sum(len(x) + 1 for x in head) + len(l) > limit * 2 // 3:
+            break
+        head.insert(0, l)
+    rest, room = [], limit - sum(len(x) + 1 for x in head) - 8
+    for l in reversed([x for x in own if key(x) not in seen]):      # then the end of what the build printed
+        if len(l) + 1 > room:
+            break
+        rest.insert(0, l)
+        room -= len(l) + 1
+    return "\n".join(head) + ("\n------\n" + "\n".join(rest) if rest else "")
 
 
 def unresolved_hosts(log: str) -> list[str]:
@@ -71,13 +103,22 @@ def refused_feeds(log: str) -> list[str] | None:
 def failure_text(log: str, limit: int = 600) -> str:
     """Why a build failed, for a result's reason: the error lines, a pointer to the firewall for the names whose
     lookups failed, and to the package feeds when a feed refused the sign-in."""
+    hint = "".join(" · " + h for h in hints(log))
+    return error_lines(log, max(200, limit - len(hint))) + hint
+
+
+def hints(log: str) -> list[str]:
+    """What a failed build's log says about its surroundings rather than the code: the names whose lookups failed
+    (the firewall), a package feed that refused the sign-in."""
+    out = []
     hosts = unresolved_hosts(log)
-    hint = (f" · name lookup failed for {', '.join(hosts)}: allow {'it' if len(hosts) == 1 else 'them'} on "
-            f"Admin → Firewall if the build needs {'it' if len(hosts) == 1 else 'them'}") if hosts else ""
+    if hosts:
+        out.append(f"name lookup failed for {', '.join(hosts)}: allow {'it' if len(hosts) == 1 else 'them'} on "
+                   f"Admin → Firewall if the build needs {'it' if len(hosts) == 1 else 'them'}")
     feeds = refused_feeds(log)
     if feeds is not None:
         at = f" ({', '.join(feeds)})" if feeds else ""
-        hint += (f" · a package feed{at} refused the build's sign-in: register the feed's URL (the host the "
-                 f"project's .npmrc, nuget.config or pom.xml names) and a read token on Admin → Source control → "
-                 f"Package feeds (it replaces a token the repository has)")
-    return error_lines(log, max(200, limit - len(hint))) + hint
+        out.append(f"a package feed{at} refused the build's sign-in: register the feed's URL (the host the "
+                   f"project's .npmrc, nuget.config or pom.xml names) and a read token on Admin → Source control → "
+                   f"Package feeds (it replaces a token the repository has)")
+    return out

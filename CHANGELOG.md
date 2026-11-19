@@ -8,6 +8,29 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.30 (2026-11-19)
+
+- **Refactoring orders** on an application's results page opens that application's orders only
+  (`/admin/refactoring?app=<id>`, with a link to every application's), not the whole list.
+- **A failed build shows its error.** "Build and run: Build failed" showed the last 1500 characters of the log,
+  which were often only Docker's own ending: the Dockerfile lines of the step that failed (a long `sed` command,
+  `>>> dotnet restore ...`) and `ERROR: failed to solve`, without the compiler's or NuGet's error. Now it shows
+  the build's lines that name an error (each once), then the end of what the build itself printed. The LLM that
+  is asked about an unexplained failure (`--ai`) gets the same text.
+- **A build that cannot look up a name says so.** Instead of "no known cause (no rule matched the log)" the reason
+  names the hosts whose lookups failed and points at Admin → Firewall (also for `getaddrinfo EAI_AGAIN <host>`,
+  which npm's native add-on installs print: `release-assets.githubusercontent.com` for a prebuilt binary,
+  `nodejs.org` for node-gyp's headers), or the package feed that refused the sign-in.
+- **Backup of an appliance whose SQL Server is the Express edition.** It failed with "BACKUP DATABASE WITH
+  COMPRESSION is not supported on Express Edition" (Msg 1844). The database is backed up without compression
+  there; the backup archive is gzip either way.
+- **The whole build and run log of a failed component, to download.** The scan's verification keeps a log per
+  attempt (`build-1.log`, `run-2.log` beside `build.log` and `run.log` in the work folder): a retry no longer
+  overwrites the log that explained the failure. A component whose build or run failed has them stored with its
+  assessment (schema 61, gzip, secrets masked, at most the last 4 million characters of each, the latest scan's
+  only), and its **Build and run** block on the results page links them under **Whole log**, for administrators
+  and operators. Logs of scans made before this version were not kept: scan the application again.
+
 ## 0.51.29 (2026-11-19)
 
 - **A Node.js application with an embedded database rates A as it is.** The scan did not know where a Node.js

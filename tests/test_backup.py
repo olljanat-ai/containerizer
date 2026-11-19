@@ -152,3 +152,32 @@ def test_the_agent_saves_the_schedule_and_starts_backups_as_their_own_unit(tmp_p
     request(action="backup-now", requested_by="alice@x")
     sysagent.process()
     assert not [c for c in calls if c[0] == "systemd-run"]
+
+
+def test_database_backup_without_compression_on_express_edition(tmp_path, monkeypatch):
+    """SQL Server Express refuses BACKUP ... WITH COMPRESSION (Msg 1844): the backup is made without it."""
+    from types import SimpleNamespace
+    monkeypatch.setattr(backup, "DB_BACKUP_DIR", tmp_path / "mssql-backup")
+    monkeypatch.setattr(backup, "SA_SECRET", tmp_path / "sa")
+    monkeypatch.setattr(backup.os, "chown", lambda *a, **k: None)
+    (tmp_path / "sa").write_text("pw\n")
+    express = ("Msg 1844, Level 16, State 1, Server b4df72d6c955, Line 1\nBACKUP DATABASE WITH COMPRESSION is not "
+               "supported on Express Edition (64-bit).\nMsg 3013, Level 16, State 1\nBACKUP DATABASE is terminating abnormally.")
+    asked = []
+
+    def run(cmd, **kw):
+        asked.append(cmd[-1])
+        assert kw["env"]["SQLCMDPASSWORD"] == "pw" and "pw" not in " ".join(cmd)
+        return SimpleNamespace(returncode=1, stdout=express, stderr="") if "COMPRESSION" in cmd[-1] else \
+            SimpleNamespace(returncode=0, stdout="", stderr="")
+    backup.backup_database("Containerizer", run=run)
+    assert len(asked) == 2 and asked[0].endswith("WITH COMPRESSION, INIT") and asked[1].endswith("WITH INIT")
+    # another edition: one statement; another error: not tried again
+    asked.clear()
+    backup.backup_database("Containerizer", run=lambda cmd, **kw: asked.append(cmd[-1]) or SimpleNamespace(returncode=0, stdout="", stderr=""))
+    assert len(asked) == 1
+    asked.clear()
+    with pytest.raises(backup.BackupError, match="disk full"):
+        backup.backup_database("Containerizer", run=lambda cmd, **kw: asked.append(cmd[-1]) or SimpleNamespace(
+            returncode=1, stdout="Msg 3202: disk full", stderr=""))
+    assert len(asked) == 1

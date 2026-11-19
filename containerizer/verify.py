@@ -541,6 +541,18 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
     env_override: dict = {}
     learned_patches: list[tuple[dict, dict, dict]] = []
     hosts = hosts_to_map(a, c)
+    # the whole log of every attempt (build-1.log, run-2.log): build.log and run.log are the latest attempt's only,
+    # and a retry overwrote the log that explained the failure
+    result["log_dir"] = str(workdir)
+    if workdir.is_dir():
+        for old in [*workdir.glob("build-*.log"), *workdir.glob("run-*.log")]:
+            old.unlink(missing_ok=True)
+
+    def keep_log(stage: str, attempt: int, text: str) -> None:
+        try:
+            (workdir / f"{stage}-{attempt}.log").write_text(text or "", errors="replace")
+        except OSError:
+            pass
     dev_helps = development_helps(c)         # else a Development run ends at the same missing services
     pruned = False
     t0 = time.time()
@@ -553,11 +565,13 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             progress.detail(f"{where}{c.name}, attempt {attempt} of {MAX_ATTEMPTS}: {what}{after}")
         show("building the image" + (" in Development mode" if env_override else ""))
         ok, log, tag = build(a, c, plan, workdir, timeout)
+        keep_log("build", attempt, log)
         stage, details = "build", {}
         if ok:
             stage = "run"
             show("running it" + (" in Development mode" if env_override else ""))
             status, log, details = run(c, plan, tag, workdir, env_override, hosts=hosts)
+            keep_log("run", attempt, log)
             if status == "exited" and c.role == "console" and details.get("exit_code") == "0":
                 status = "ok"                    # a batch job that ran to completion
                 details["note"] = "job completed"
@@ -572,6 +586,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         msgs = _messages(log) if stage == "run" else log
         # deep stack traces would push the exception message itself out of a raw tail
         tail = "\n".join(msgs.splitlines()[-200:])
+        if stage == "build":
+            from .buildlog import build_tail
+            tail = build_tail(msgs[-200000:])   # the errors, not only Docker's report of the step that failed
         d = diagnose(msgs[-60000:], stage, failures)
         if d is None and ai:
             from .ai import diagnose_failure
@@ -584,8 +601,10 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
             continue
         if d is None:
+            from .buildlog import hints
+            why = hints(msgs[-200000:]) if stage == "build" else []     # the firewall, a package feed: not the code
             history.append({"attempt": attempt, "stage": stage, "status": "unexplained", **details,
-                            "log_tail": tail[-1500:]})
+                            **({"note": "; ".join(why)} if why else {}), "log_tail": tail[-1500:]})
             result["status"] = f"{stage}-failed"
             break
         fr, caps = d

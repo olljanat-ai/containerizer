@@ -192,15 +192,22 @@ def external_database(appliance_env: dict) -> bool:
 
 def backup_database(database: str, run=subprocess.run) -> None:
     """BACKUP DATABASE of the appliance's own SQL Server into its backup folder (bind-mounted from the host). The sa
-    password goes in the environment of the exec, not on a command line."""
+    password goes in the environment of the exec, not on a command line. Compressed where the edition can (Developer,
+    Standard, Enterprise); SQL Server Express cannot, and is backed up without."""
     DB_BACKUP_DIR.mkdir(mode=0o770, exist_ok=True)
     os.chown(DB_BACKUP_DIR, MSSQL_UID, 0)
     if not re.fullmatch(r"[A-Za-z_][\w$#@]{0,127}", database):
         raise BackupError(f"not a database name: {database!r}")
-    sql = f"BACKUP DATABASE [{database}] TO DISK = N'/var/opt/mssql/backup/{DB_BACKUP_FILE}' WITH COMPRESSION, INIT"
     env = dict(os.environ, SQLCMDPASSWORD=SA_SECRET.read_text().strip())
-    p = run(["docker", "exec", "-e", "SQLCMDPASSWORD", "cz-mssql", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S",
-             "localhost", "-U", "sa", "-b", "-Q", sql], env=env, capture_output=True, text=True, timeout=3 * 3600)
+
+    def backup(options: str):
+        sql = f"BACKUP DATABASE [{database}] TO DISK = N'/var/opt/mssql/backup/{DB_BACKUP_FILE}' WITH {options}"
+        return run(["docker", "exec", "-e", "SQLCMDPASSWORD", "cz-mssql", "/opt/mssql-tools18/bin/sqlcmd", "-C", "-S",
+                    "localhost", "-U", "sa", "-b", "-Q", sql], env=env, capture_output=True, text=True, timeout=3 * 3600)
+    p = backup("COMPRESSION, INIT")
+    if p.returncode != 0 and re.search(r"Msg 1844\b|COMPRESSION is not supported", (p.stdout or "") + (p.stderr or "")):
+        # Express edition has no backup compression (Msg 1844): the archive the file goes into is gzip anyway
+        p = backup("INIT")
     if p.returncode != 0:
         raise BackupError(f"BACKUP DATABASE failed: {(p.stdout + p.stderr).strip()[-600:]}")
 

@@ -308,6 +308,55 @@ def _cut(s, n: int):
 
 
 VERIFY_FAILED = ("build-failed", "run-failed")
+VERIFY_LOG_MAX = 4_000_000          # characters of one attempt's log that are kept (its end)
+
+
+def verify_logs(v: dict) -> list[dict]:
+    """The whole logs of a failed verification, per attempt and stage, from the files verify.verify_component
+    left (result log_dir: build-1.log, run-2.log): {"attempt", "stage", "chars", "truncated", "gz"}, secrets masked,
+    the end of a log longer than VERIFY_LOG_MAX."""
+    import gzip
+    from .orgsource import REDACT
+    from .sandbox import redact
+    out, seen = [], set()
+    folder = Path(str(v.get("log_dir") or ""))
+    if v.get("status") not in VERIFY_FAILED or not v.get("log_dir") or not folder.is_dir():
+        return out
+    for h in v.get("attempts") or []:
+        try:
+            n = int(h.get("attempt") or 0)
+        except (TypeError, ValueError):
+            continue
+        for stage in ("build", "run") if h.get("stage") == "run" else ("build",):
+            path = folder / f"{stage}-{n}.log"
+            if (n, stage) in seen or not 0 < n < 100 or not path.is_file():
+                continue
+            seen.add((n, stage))
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue
+            cut = len(text) > VERIFY_LOG_MAX
+            text = redact(REDACT(text[-VERIFY_LOG_MAX:]))     # the tokens it knows, then the usual shapes
+            out.append({"attempt": n, "stage": stage, "chars": len(text), "truncated": cut,
+                        "gz": gzip.compress(text.encode("utf-8", "replace"), 6)})
+    return out
+
+
+def store_verify_logs(cur, assessment_id: int, comp_id: int, v: dict) -> int:
+    """Keep them (cz.ComponentVerifyLog, schema 61); nothing on a database before it. Only the latest scan's are
+    kept: the logs of the component's earlier assessments go, whether this one failed or not."""
+    cur.execute("SELECT OBJECT_ID(N'cz.ComponentVerifyLog')")
+    row = cur.fetchone()
+    if not row or (row[0] if not isinstance(row, dict) else next(iter(row.values()))) is None:
+        return 0
+    cur.execute("DELETE cz.ComponentVerifyLog WHERE ComponentId = %s AND AssessmentId <> %s", (comp_id, assessment_id))
+    logs = verify_logs(v)
+    for x in logs:
+        cur.execute("INSERT cz.ComponentVerifyLog (AssessmentId, ComponentId, Attempt, Stage, Chars, Truncated, LogGz) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (assessment_id, comp_id, x["attempt"], x["stage"], x["chars"], bool(x["truncated"]), x["gz"]))
+    return len(logs)
 
 
 def verify_detail(v: dict, limit: int = 2000) -> str | None:
@@ -379,6 +428,7 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None) -> int:
                          c["verdict"], _cut(c.get("verdict_text", c["verdict"]), 200), int(c["score"]),
                          float(c.get("confidence", 1)), bool(c.get("windows_container_ok")),
                          status, _cut(detail if status else None, 2000)))
+            store_verify_logs(cur, assessment_id, comp_id, v)
             if c.get("migration"):
                 _migration(cur, assessment_id, comp_id, c["migration"])
             for f in c.get("findings", []):

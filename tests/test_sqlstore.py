@@ -744,3 +744,102 @@ def test_a_migrated_application_is_on_the_results_pages(db):
         conn.close()
     res.excluded = []
     assert replatform.assessment(res)["rating"] == "A"
+
+
+def test_the_whole_logs_of_a_failed_verification(tmp_path):
+    """Each attempt keeps its own log; a failed component's are stored whole (secrets masked) and downloaded from
+    the results page by administrators and operators."""
+    import gzip
+    from types import SimpleNamespace
+    from containerizer import verifylog
+    (tmp_path / "build-1.log").write_text("#9 npm error gyp ERR! stack Error: getaddrinfo EAI_AGAIN nodejs.org\n")
+    (tmp_path / "build-2.log").write_text("x" * 50 + "\nhttps://user:hunter2secret@feed.example/npm/ failed\n")
+    (tmp_path / "run-2.log").write_text("Unhandled exception\n")
+    (tmp_path / "build-7.log").write_text("of an earlier scan's attempt: not in this result\n")
+    v = {"status": "run-failed", "log_dir": str(tmp_path), "attempts": [
+        {"attempt": 1, "stage": "build", "rule": "build-x", "outcome": "retry"}, {"attempt": 2, "stage": "run", "status": "unexplained"}]}
+    logs = sqlstore.verify_logs(v)
+    assert [(x["attempt"], x["stage"]) for x in logs] == [(1, "build"), (2, "build"), (2, "run")]
+    assert "EAI_AGAIN nodejs.org" in gzip.decompress(logs[0]["gz"]).decode()
+    assert "hunter2secret" not in gzip.decompress(logs[1]["gz"]).decode() and not logs[1]["truncated"]
+    assert sqlstore.verify_logs({**v, "status": "ok"}) == [] and sqlstore.verify_logs({**v, "log_dir": str(tmp_path / "gone")}) == []
+    old = sqlstore.VERIFY_LOG_MAX
+    sqlstore.VERIFY_LOG_MAX = 20
+    try:
+        cut = sqlstore.verify_logs(v)[0]
+        assert cut["truncated"] and cut["chars"] == 20 and gzip.decompress(cut["gz"]).decode().endswith("nodejs.org\n")
+    finally:
+        sqlstore.VERIFY_LOG_MAX = old
+
+    class Cur:
+        def __init__(self, rows):
+            self.rows, self.sql = rows, []
+
+        def execute(self, sql, params=()):
+            self.sql.append((sql, params))
+
+        def fetchone(self):
+            return self.rows.pop(0) if self.rows else None
+
+        def fetchall(self):
+            return self.rows
+    cur = Cur([(None,)])                                           # a database before schema 61: nothing stored
+    assert sqlstore.store_verify_logs(cur, 5, 9, v) == 0 and len(cur.sql) == 1
+    cur = Cur([(1234,)])
+    assert sqlstore.store_verify_logs(cur, 5, 9, v) == 3
+    assert "DELETE cz.ComponentVerifyLog WHERE ComponentId" in cur.sql[1][0] and cur.sql[1][1] == (9, 5)
+    assert [p[2:4] for s, p in cur.sql[2:]] == [(1, "build"), (2, "build"), (2, "run")]
+
+    # the links, and the download
+    html = verifylog.links_html([{"stage": "build", "attempt": 1, "chars": 300000, "truncated": False,
+                                  "url": "/admin/verify-log/5/9/build-1.log"}])
+    assert "href='/admin/verify-log/5/9/build-1.log'>build, attempt 1</a>" in html and "293 KB" in html
+    assert verifylog.links_html(None) == ""
+    adm = SimpleNamespace(_shell=lambda s, a, title, tab, body, flash="": title)
+    row = {"LogGz": logs[0]["gz"], "ComponentName": "interferencia", "ApplicationName": "Integr HO / angular"}
+    conn = SimpleNamespace(cursor=lambda as_dict=False: Cur([row]))
+    op = SimpleNamespace(admin=False, operator=True)
+    r = verifylog.route(adm, conn, None, op, "GET", ["verify-log", "5", "9", "build-1.log"])
+    assert r.status == 200 and b"EAI_AGAIN nodejs.org" in r.body and r.ctype.startswith("text/plain")
+    assert ("Content-Disposition", 'attachment; filename="Integr-HO-angular-interferencia-build-1.log"') in r.headers
+    for parts in (["verify-log", "5", "9", "build-1.txt"], ["verify-log", "5", "x", "build-1.log"],
+                  ["verify-log", "5", "9", "../build-1.log"], ["verify-log", "5", "9"]):
+        assert verifylog.route(adm, conn, None, op, "GET", parts).status == 404
+    assert verifylog.route(adm, conn, None, op, "POST", ["verify-log", "5", "9", "build-1.log"]).status == 404
+    nobody = SimpleNamespace(admin=False, operator=False)
+    assert verifylog.route(adm, conn, None, nobody, "GET", ["verify-log", "5", "9", "build-1.log"]).status == 403
+    assert verifylog.route(adm, SimpleNamespace(cursor=lambda as_dict=False: Cur([])), None, op, "GET",
+                           ["verify-log", "5", "9", "build-1.log"]).status == 404
+
+
+@needs_sql
+def test_verify_logs_in_sql_server(db, tmp_path):
+    """Schema 61: the writer stores a failed component's logs (the latest scan's only), the admin login reads them,
+    the reader role cannot."""
+    import gzip
+    web_app(tmp_path / "logs-app")
+    a = assess(tmp_path / "logs-app")
+    logs = tmp_path / "work"
+    logs.mkdir()
+    (logs / "build-1.log").write_text("error CS0246: first scan\n")
+    a.verification = [{"app": a.name, "component": a.components[0].name, "status": "build-failed", "log_dir": str(logs),
+                       "attempts": [{"attempt": 1, "stage": "build", "status": "unexplained", "log_tail": "error CS0246"}]}]
+    writer = _as(db, "cz_t_writer")
+    first = sqlstore.store_results(writer, [a], [tmp_path / "logs-app"], password="Test-Passw0rd!x")[0]
+    (logs / "build-1.log").write_text("error CS0246: second scan\n")
+    second = sqlstore.store_results(writer, [a], [tmp_path / "logs-app"], password="Test-Passw0rd!x")[0]
+    adm = sqlstore.connect(_as(db, "cz_t_editor"), password="Test-Passw0rd!x")
+    try:
+        cur = adm.cursor(as_dict=True)
+        cur.execute("SELECT AssessmentId, Attempt, Stage, Chars, LogGz FROM cz.ComponentVerifyLog")
+        rows = cur.fetchall()
+        assert [(r["AssessmentId"], r["Attempt"], r["Stage"]) for r in rows] == [(second, 1, "build")] and first != second
+        assert gzip.decompress(bytes(rows[0]["LogGz"])).decode() == "error CS0246: second scan\n"
+    finally:
+        adm.close()
+    reader = sqlstore.connect(_as(db, "cz_t_reader"), password="Test-Passw0rd!x")
+    try:
+        with pytest.raises(Exception, match="(?i)permission"):
+            reader.cursor().execute("SELECT COUNT(*) FROM cz.ComponentVerifyLog")
+    finally:
+        reader.close()

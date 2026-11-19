@@ -1970,3 +1970,27 @@ def test_answers_the_llm_got_almost_right(stateful):
     assert "use package_changes" in errors[0]
     _, errors = rf.apply_answer(stateful, edit("Dockerfile", "x", "y"), ["src/Shop.Api/Bank.cs"], None)
     assert "say so in not_fixed" in errors[0]
+
+
+def test_the_orders_list_of_one_application(adm):
+    """The application's results page links to its own orders (?app=<id>), not to everyone's."""
+    def job(n, app_id, app):
+        return {"JobId": n, "Status": "answered", "Summary": "ok", "Error": None, "Note": None, "App": app, "Repository": None,
+                "Component": None, "ProjectPath": None, "ApplicationId": app_id, "AssessmentId": 1, "SourceKey": None,
+                "RequestedBy": "a@example.com", "Model": None, "Endpoint": None, "InputChars": 0, "InputTokens": 0,
+                "OutputTokens": 0, "EstInputTokens": 0, "Seconds": 1, "Attempts": 1, "QueuedAt": datetime(2026, 11, 19),
+                "StartedAt": None, "FinishedAt": datetime(2026, 11, 19), "VerifyStatus": "ok", "PatchStatus": "verified",
+                "Goal": "rating-a", "SandboxStatus": None}
+    jobs = [job(12, 7, "shop"), job(11, 9, "bank")]
+    adm.conn.answers = {
+        r"FROM cz.LlmJob WHERE Kind = N'refactor' AND ApplicationId = %s": lambda p: [j for j in jobs if j["ApplicationId"] == p[0]],
+        r"FROM cz.LlmJob WHERE Kind = N'refactor' ORDER BY": jobs,
+        r"SELECT ApplicationName FROM cz.Application": lambda p: [{"ApplicationName": "shop"}] if p[0] == 7 else []}
+    ad = adm.sessions.create("a@example.com", "A", True)
+    b = _get(adm, ad, "/admin/refactoring").body
+    assert "shop: Make it A" in b and "bank: Make it A" in b and "Orders of" not in b
+    b = _getq(adm, ad, "/admin/refactoring", "app=7").body
+    assert "shop: Make it A" in b and "bank" not in b
+    assert "Orders of <a href='/app/7'><b>shop</b></a> only" in b and "href='/admin/refactoring'>Show every application's</a>" in b
+    assert _getq(adm, ad, "/admin/refactoring", "app=8").status == 404           # no such application
+    assert "bank: Make it A" in _getq(adm, ad, "/admin/refactoring", "app=x%27").body     # not a number: the whole list

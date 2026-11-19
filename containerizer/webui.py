@@ -1117,7 +1117,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                        f"<div class='muted small'>{e(c['VerdictText'])}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
-                       f"{_verify_detail(c, healthy)}{_sandbox_detail(sandbox.get(c['ComponentId']), (refactor.get('sandbox_logs') or {}).get(c['ComponentId']))}{items}"
+                       f"{_verify_detail(c, healthy, (refactor.get('verify_logs') or {}).get(c['ComponentId']))}{_sandbox_detail(sandbox.get(c['ComponentId']), (refactor.get('sandbox_logs') or {}).get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
@@ -1176,7 +1176,7 @@ def admin_links(admin, conn, s, app: dict) -> list[tuple[str, str]]:
     if devdb_enabled(admin, a):
         out.append(("Dev databases", f"/admin/dev-databases/{app_id}"))
     if a.admin or a.operator:
-        out.append(("Refactoring orders", "/admin/refactoring"))
+        out.append(("Refactoring orders", f"/admin/refactoring?app={app_id}"))
     return out
 
 
@@ -1295,8 +1295,10 @@ def _verify(c: dict, healthy=()) -> str:
     return out
 
 
-def _verify_detail(c: dict, healthy=()) -> str:
-    """Why a component's build or run failed, with the end of its log (VerifyDetail), in its details."""
+def _verify_detail(c: dict, healthy=(), logs=None) -> str:
+    """Why a component's build or run failed, with the errors of its log (VerifyDetail), in its details; `logs`:
+    the whole logs to download (verifylog.available: administrators and operators)."""
+    from .verifylog import links_html
     s = c.get("VerifyStatus")
     if s not in VERIFY_FAILED:
         return ""
@@ -1313,7 +1315,7 @@ def _verify_detail(c: dict, healthy=()) -> str:
                 + "<p class='muted small'>This scan kept no log; the next scan shows the end of it here.</p>")
     return (f"<div class='sandbox'><div><span class='label'>Build and run</span> {_verify(dict(c, ComponentId=None))}"
             " <span class='muted small'>(in the scan's verification, before anything is generated)</span></div>"
-            f"{body}<p class='muted small'>{e(after)}</p></div>")
+            f"{body}{links_html(logs)}<p class='muted small'>{e(after)}</p></div>")
 
 
 def _verify_failed_note(app: dict) -> str:
@@ -1874,6 +1876,8 @@ def make_handler(connect, admin=None):
                             if s and (s.admin or s.operator):                   # may scan it again (scanagain.py)
                                 ctx.update(scan_again_ctx(admin, app))
                                 ctx["sandbox_logs"] = sandbox_logs(admin, app)  # the failing containers' logs
+                                from .verifylog import available
+                                ctx["verify_logs"] = available(admin, app)       # the failed builds' whole logs
                                 ctx["scan_csrf"] = admin._csrf(s)
                             ctx["lab_admin"] = bool(s and s.admin)              # may turn lab services on
                             ctx["lab_mail"] = bool(s and (s.admin or s.operator) and getattr(admin, "system", None))
