@@ -60,8 +60,8 @@ results page. Use it to see what turning a service on brings into the sandbox, o
 The scan decides, for each component, which services the component needs:
 
 - **Packages**, the component's own or those of the projects it references (`rules/lab-services.yaml`):
-    - SQL Server: `Microsoft.Data.SqlClient`, `System.Data.SqlClient`, `Microsoft.EntityFrameworkCore.SqlServer`, `Hangfire.SqlServer`, `dbup-sqlserver`
-    - PostgreSQL: `Npgsql*`, `Hangfire.PostgreSql`, `dbup-postgresql`
+    - SQL Server: `Microsoft.Data.SqlClient`, `System.Data.SqlClient`, `Microsoft.EntityFrameworkCore.SqlServer`, `Hangfire.SqlServer`, `dbup-sqlserver`, `NServiceBus.Transport.SqlServer` (`NServiceBus.SqlServer`)
+    - PostgreSQL: `Npgsql*`, `Hangfire.PostgreSql`, `dbup-postgresql`, `NServiceBus.Transport.PostgreSql`
     - Redis: `StackExchange.Redis`, `Microsoft.Extensions.Caching.StackExchangeRedis`, the SignalR and Data Protection Redis packages
     - S3: `AWSSDK.S3`, `Minio`
     - Azure Blob storage: `Azure.Storage.Blobs`, `Microsoft.Azure.Storage.Blob`, `WindowsAzure.Storage`
@@ -105,7 +105,8 @@ The scan decides, for each component, which services the component needs:
       which the lab does not run. A component with a Db2 or Oracle driver (`Net.IBM.Data.Db2*`, `IBM.Data.DB2*`,
       `Oracle.ManagedDataAccess*`, ...) and no driver of a lab database gets no lab database from its settings;
     - `mongodb://` means MongoDB, and `DatabaseName` under a `Mongo...` section is its database;
-    - `amqp://`, or `host=` under a key that names RabbitMQ or EasyNetQ, means RabbitMQ. So do `HostName`,
+    - `amqp://`, or `host=` under a key that names RabbitMQ, EasyNetQ or NServiceBus (NServiceBus.RabbitMQ's
+      `host=broker;username=...`, without `Database=` or `Server=`), means RabbitMQ. So do `HostName`,
       `UserName`, `Password`, `Port` and `VirtualHost` under a `RabbitMQ` section;
     - `BootstrapServers` (or `bootstrap.servers`) means Kafka;
     - `Host`, `Port`, `Username` and `Password` under an `Sftp` or `Ssh` section mean SFTP;
@@ -390,3 +391,16 @@ services you turn on.
 
 The appliance downloads each image from its publisher when the service is first used. Nothing is
 redistributed in the OS image.
+
+## NServiceBus endpoints
+
+The scan finds NServiceBus endpoints (the finding **NServiceBus**, information only) and the transport each one uses:
+its transport package (`NServiceBus.RabbitMQ`, `NServiceBus.Transport.SqlServer`, `NServiceBus.Transport.PostgreSql`,
+`NServiceBus.Transport.AzureServiceBus`, `NServiceBus.AmazonSQS`, `NServiceBus.Transport.Msmq`, ...), else the code
+(`UseTransport<LearningTransport>()`, `new SqlServerTransport(...)`); an endpoint on NServiceBus 6 or earlier with
+neither uses MSMQ, its default. The [inventory](inventory.md) lists each endpoint with its transport.
+
+An endpoint on RabbitMQ, SQL Server or PostgreSQL gets that lab service like any other client: its transport's
+connection string points at the lab's server. MSMQ does not run in a Linux container (the finding **MSMQ**), and the
+lab does not run Azure Service Bus or Amazon SQS: those endpoints need their transport changed in code
+(`UseTransport`) to run in the lab. Containerizer finds and lists them; it does not change the transport.

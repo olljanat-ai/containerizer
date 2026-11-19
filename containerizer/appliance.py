@@ -208,6 +208,8 @@ class SystemPage:
                 return 303, "", back + urlencode({"msg": "Planned restart cancelled. Scans and the LLM queue go on."})
             if what in ("backup", "backup-now"):
                 return 303, "", back + urlencode({"msg": self.backup_post(s, what, form, st)}) + "#backup"
+            if what in ("sql-readonly", "sql-incoming"):
+                return 303, "", back + urlencode({"msg": self.sql_access_post(s, what, form, st)}) + "#sql-access"
             if what == "app-patch-remove":
                 if not st.get("app_patch"):
                     return 303, "", back + urlencode({"msg": "No app update is installed."})
@@ -591,6 +593,7 @@ A roll back to a snapshot removes it too.</p>
 <label class='small'><input type='checkbox' name='confirm' value='yes' required> I understand that the services restart
 and scans in progress are cut off</label></form>""")
         out.append(self.render_backup(st.get("backup"), s))
+        out.append(self.render_sql_access(st.get("sql_access"), s))
         snaps = st.get("snapshots") or []
         rows = []
         for x in snaps:
@@ -613,6 +616,81 @@ and scans in progress are cut off</label></form>""")
 {plan_fields("rollback")}<button{dis}>Roll back</button>
 {confirm}</form>""")
         return "".join(out)
+
+    # -- the results database from the network (sqlaccess.py; the system agent applies it) -------
+
+    def sql_access_post(self, s, what: str, form: dict, st: dict) -> str:
+        from .sqlaccess import LOGIN, SqlAccessError, check_password, networks
+        a = st.get("sql_access") or {}
+        if not a.get("local"):
+            return "Not changed: the results database is an external SQL Server; its DBA decides who connects."
+        if what == "sql-readonly":
+            if form.get("disable", [""])[0] == "1":
+                self.request("sql-readonly", s.user, s.name, enabled=False)
+                return f"The read-only login {LOGIN} is being disabled."
+            pw, again = form.get("password", [""])[0], form.get("password2", [""])[0]
+            if pw != again:
+                return "Not saved: the two passwords differ."
+            try:
+                check_password(pw)
+            except SqlAccessError as ex:
+                return f"Not saved: {ex}."
+            self.request("sql-readonly", s.user, s.name, enabled=True, password=pw)
+            return f"The read-only login {LOGIN} gets the new password within a few seconds."
+        on = form.get("enabled", [""])[0] == "1"
+        try:
+            nets = networks(form.get("networks", [""])[0])
+        except SqlAccessError as ex:
+            return f"Not saved: {ex}."
+        if on and not nets:
+            return "Not saved: list the networks clients connect from (for example 10.20.0.0/16)."
+        self.request("sql-incoming", s.user, s.name, enabled=on, networks=nets)
+        return (f"Incoming connections on port 1433 from {', '.join(nets)}: being turned on." if on
+                else "Incoming connections are being turned off.")
+
+    @staticmethod
+    def render_sql_access(a: dict | None, s) -> str:
+        from .sqlaccess import LOGIN, PORT
+        a = a if isinstance(a, dict) else {}
+        csrf = f"<input type='hidden' name='csrf' value='{e(s.csrf)}'>"
+        head = "<h2 id='sql-access'>Results database access</h2>"
+        if not a.get("local"):
+            return head + ("<p class='muted small'>The results database is an external SQL Server (CZ_SQL_SERVER): its "
+                           "DBA makes its logins and decides who connects.</p>" if a else
+                           "<p class='muted small'>Not reported by the system agent yet.</p>")
+        login = (f"<p>Read-only login <code>{e(LOGIN)}</code>: <b class='good'>on</b>, password set "
+                 f"{e(_when(a.get('login_set_at')))}" + (f" by {e(str(a.get('login_set_by')))}" if a.get("login_set_by") else "")
+                 + "</p>" if a.get("login") else
+                 f"<p>Read-only login <code>{e(LOGIN)}</code>: <b>off</b>.</p>")
+        listening = ", ".join(a.get("listening") or [])
+        incoming = (f"<p>Incoming connections: <b class='good'>on</b> from {e(', '.join(a.get('networks') or []))}"
+                    + (f"; listening on <code>{e(listening)}</code>" if listening else "; starting") + "</p>"
+                    if a.get("incoming") else "<p>Incoming connections: <b>off</b> (only this appliance's own services "
+                                              "connect).</p>")
+        err = f"<p class='note'>{e(str(a['error']))}</p>" if a.get("error") else ""
+        nets = "\n".join(a.get("networks") or [])
+        return f"""{head}
+<p class='muted small'>The built-in SQL Server holds the results database. A read-only login lets reporting tools (Power
+BI, Excel, a SQL client) read the results views, as the results pages do; it cannot change anything. With incoming
+connections on, the appliance accepts connections to port {PORT} from the networks listed here only, never from the
+sandbox's applications or the builds. Clients connect to <code>&lt;appliance address&gt;,{PORT}</code>, database
+<code>Containerizer</code>, with encryption and the server's own certificate (<code>TrustServerCertificate=yes</code>).</p>
+{login}{incoming}{err}
+<form method='post' action='/admin/system/sql-readonly' autocomplete='off'>{csrf}
+<div class='formrow'><label for='sql-pw'>Password for <code>{e(LOGIN)}</code></label>
+<input type='password' id='sql-pw' name='password' minlength='12' maxlength='128' autocomplete='new-password' required>
+<label for='sql-pw2'>Again</label>
+<input type='password' id='sql-pw2' name='password2' minlength='12' maxlength='128' autocomplete='new-password' required></div>
+<p class='muted small'>12 to 128 characters with three of: upper case, lower case, digits, symbols. It is not stored on
+the appliance: keep it in your password manager.</p>
+<button>{'Set a new password' if a.get('login') else 'Turn on the read-only login'}</button></form>
+{f"<form method='post' action='/admin/system/sql-readonly'>{csrf}<input type='hidden' name='disable' value='1'><button class='secondary'>Turn off the read-only login</button></form>" if a.get('login') else ''}
+<form method='post' action='/admin/system/sql-incoming'>{csrf}
+<div class='formrow'><label class='check'><input type='checkbox' name='enabled' value='1'{' checked' if a.get('incoming') else ''}>
+Accept connections from the network on port {PORT}</label></div>
+<label for='sql-nets'>From these networks <span class='muted'>(one per line: 10.20.0.0/16, 192.0.2.15)</span></label>
+<textarea id='sql-nets' name='networks' rows='3'>{e(nets)}</textarea>
+<button>Save</button></form>"""
 
     # -- scheduled backup (backup.py; the system agent runs it) ---------------------------------
 

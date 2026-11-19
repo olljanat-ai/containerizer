@@ -77,10 +77,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import apppatch, backup, local_llm, restartplan
+from . import apppatch, backup, local_llm, restartplan, sqlaccess
 from .apppatch import PatchError
 from .backup import BackupError
 from .local_llm import LocalLlmError
+from .sqlaccess import SqlAccessError
 
 VERSION_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}")
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -93,7 +94,8 @@ CATEGORY_MAX = 40
 TABLE = "cz_firewall"
 DNS_ADDR = "169.254.53.53"        # dnsmasq: the one resolver of the host, Docker and k3s
 REFUSER = "127.0.0.1#5354"        # dnsmasq's default server: answers REFUSED and counts the names (dnsrefuse.py)
-INBOUND_TCP = (22, 443)           # SSH and HTTPS; nothing else is reachable from outside
+INBOUND_TCP = (22, 443)           # SSH and HTTPS; nothing else is reachable from outside (but 1433 when
+#                                   an administrator opens the results database: sqlaccess.py)
 # k3s pods and services: traffic between them and the host stays allowed (the k3s API, the kubelet)
 K3S4 = ("10.42.0.0/16", "10.43.0.0/16")
 K3S_IFACES = ("cni0", "flannel.1", "veth*")
@@ -306,7 +308,7 @@ def publish(task: dict | None = None, egress_state: dict | None = None, https_st
           "egress": egress_state if egress_state is not None else (old.get("egress") or egress_status()),
           "sandbox_https": https_state if https_state is not None else (old.get("sandbox_https") or sandbox_https_status()),
           "pod_network": pod_network if pod_network is not None else old.get("pod_network"),
-          "backup": backup_status()}
+          "backup": backup_status(), "sql_access": sql_access_status()}
     atomic_write(P.run / "status.json", json.dumps(st, indent=1), 0o644)
     return st
 
@@ -330,6 +332,113 @@ def start_backup(user: str = "schedule", name: str = "") -> bool:
          "--property=IOSchedulingClass=idle", "--description=containerizer appliance: backup",
          sys.executable, "-m", "containerizer.sysagent", "backup", "run"], timeout=60)
     return True
+
+
+# =============================================================================== the results database from the network
+
+def sql_local() -> bool:
+    """The built-in SQL Server (not CZ_SQL_SERVER)."""
+    try:
+        return external_sql(read_env(P.appliance_env)) is None
+    except Exception:  # noqa: BLE001 - a broken appliance.env: not the built-in one's business here
+        return False
+
+
+def sql_access_status() -> dict | None:
+    try:
+        s = sqlaccess.load()
+        return sqlaccess.status(s, sql_local(), s.get("listening"))
+    except Exception as ex:  # noqa: BLE001 - status.json is written anyway
+        return {"error": f"{type(ex).__name__}: {ex}"[:300]}
+
+
+def sql_owner():
+    from . import sqlstore
+    sql = sql_settings(read_env(P.appliance_env))
+    owner_pw = (P.sql_secret.parent / sql["CZ_SQL_OWNER_SECRET"]).read_text().strip()
+    return sqlstore.connect(sql["CZ_SQL_OWNER_CS"], owner_pw)
+
+
+def sql_readonly(req: dict, user: str, name: str, connect=None) -> None:
+    """Admin -> System -> Results database access: the read-only login cz_readonly made (or its new password set)
+    in the role reader, or disabled. The password is not kept anywhere."""
+    if not sql_local():
+        raise SqlAccessError("the results database is an external SQL Server: its DBA makes its logins")
+    s = sqlaccess.load()
+    if req.get("enabled"):
+        sqlaccess.check_password(str(req.get("password") or ""))
+    try:
+        _sql_readonly(req, s, user, connect)
+    except SqlAccessError:
+        raise
+    except Exception as ex:  # noqa: BLE001 - the database's own error (pymssql), said on the page
+        raise SqlAccessError(f"the database refused: {type(ex).__name__}: {str(ex)[:300]}") from None
+    s.pop("error", None)
+    s.update(changed_at=sqlaccess.now(), changed_by=user)
+    sqlaccess.save(s)
+    log(f"results database: read-only login {sqlaccess.LOGIN} {'set' if s['login'] else 'disabled'} by {user}")
+
+
+def _sql_readonly(req: dict, s: dict, user: str, connect=None) -> None:
+    from . import sqlstore
+    conn = (connect or sql_owner)()
+    try:
+        if req.get("enabled"):
+            pw = str(req.get("password") or "")
+            sqlstore.create_login(conn, sqlaccess.LOGIN, pw, sqlaccess.ROLE)
+            conn.cursor().execute(f"ALTER LOGIN [{sqlaccess.LOGIN}] ENABLE")
+            s.update(login=True, login_set_at=sqlaccess.now(), login_set_by=user)
+        else:
+            conn.cursor().execute(f"IF SUSER_ID(N'{sqlaccess.LOGIN}') IS NOT NULL ALTER LOGIN [{sqlaccess.LOGIN}] DISABLE")
+            s.update(login=False)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def sql_incoming(req: dict, user: str, name: str) -> None:
+    """Incoming connections on port 1433 from the listed networks: the firewall and the proxy units."""
+    s = sqlaccess.load()
+    on = bool(req.get("enabled"))
+    nets = sqlaccess.networks(req.get("networks") or [])
+    if on and not sql_local():
+        raise SqlAccessError("the results database is an external SQL Server: connect to it directly")
+    if on and not nets:
+        raise SqlAccessError("list the networks clients connect from")
+    s.pop("error", None)
+    s.update(incoming=on, networks=nets, changed_at=sqlaccess.now(), changed_by=user)
+    sqlaccess.save(s)
+    apply_firewall(reload_dns=False)
+    sql_access_reconcile()
+    log(f"results database: incoming connections {'on from ' + ', '.join(nets) if on else 'off'} ({user})")
+
+
+def sql_access_reconcile() -> str:
+    """Every 5 minutes (`status`) and after a change: the proxy units as the settings want them, on the appliance's
+    addresses now (DHCP may change them)."""
+    s = sqlaccess.load()
+    sock = f"{sqlaccess.UNIT}.socket"
+    active = subprocess.run(["systemctl", "is-active", "--quiet", sock], timeout=30).returncode == 0
+    if not (s.get("incoming") and s.get("networks") and sql_local()):
+        if active or s.get("listening"):
+            run(["systemctl", "stop", sock, f"{sqlaccess.UNIT}.service"], timeout=60, check=False)
+            s["listening"] = []
+            sqlaccess.save(s)
+            return "stopped"
+        return "off"
+    listen = sqlaccess.listen_addresses(network_state()["addresses"])
+    if not listen:
+        return "no address"
+    if active and s.get("listening") == listen:
+        return "up to date"
+    if active:
+        run(["systemctl", "stop", sock, f"{sqlaccess.UNIT}.service"], timeout=60, check=False)
+    run(["systemctl", "reset-failed", sock, f"{sqlaccess.UNIT}.service"], timeout=30, check=False)
+    run(sqlaccess.proxy_command(listen), timeout=60)
+    s["listening"] = listen
+    sqlaccess.save(s)
+    log(f"results database: listening on {', '.join(listen)}")
+    return "started"
 
 
 def backup_check() -> str:
@@ -955,8 +1064,9 @@ def upstream_servers() -> list[str]:
     return out[:4]
 
 
-def render(system: dict, admin: dict, upstreams: list[str] | None = None) -> tuple[str, str]:
-    """(nftables ruleset, dnsmasq configuration) for the system and the administrators' rules."""
+def render(system: dict, admin: dict, upstreams: list[str] | None = None, sql_access: dict | None = None) -> tuple[str, str]:
+    """(nftables ruleset, dnsmasq configuration) for the system and the administrators' rules, and the results
+    database's incoming connections (sqlaccess.py) when they are on."""
     upstreams = upstream_servers() if upstreams is None else upstreams
     rules = [dict(r, origin="system") for r in system["rules"]] + [dict(r, origin="admin") for r in admin["rules"]]
     enforce = admin.get("mode", "enforce") == "enforce"
@@ -1005,6 +1115,7 @@ def render(system: dict, admin: dict, upstreams: list[str] | None = None) -> tup
     docker_ifaces = ", ".join(f'"{i}"' for i in DOCKER_IFACES)
     verdict = "drop" if enforce else "accept"
     allow_s = "\n".join(allow)
+    sql_in = "".join(x + "\n" for x in sqlaccess.nft_lines(sql_access or {}, f"{k3s_ifaces}, {docker_ifaces}"))
     nft = f"""# generated by containerizer.sysagent; do not edit (`python -m containerizer.sysagent firewall show`)
 table inet {TABLE}
 delete table inet {TABLE}
@@ -1034,7 +1145,7 @@ table inet {TABLE} {{
     # pods: HTTPS (the sandbox apps' own URLs are on Caddy), never SSH
     iifname {{ {k3s_ifaces} }} tcp dport 22 drop
     tcp dport {{ {", ".join(str(p) for p in INBOUND_TCP)} }} accept
-    limit rate 10/minute burst 20 packets log prefix "cz-in-drop: " level info
+{sql_in}    limit rate 10/minute burst 20 packets log prefix "cz-in-drop: " level info
   }}
 
   chain forward {{
@@ -1081,7 +1192,7 @@ def apply_firewall(reload_dns: bool = True) -> dict:
     """Load the ruleset (checked first; one transaction) and the DNS allow-list."""
     system = system_rules()
     admin = load_rules(P.rules)
-    nft, dns = render(system, admin)
+    nft, dns = render(system, admin, sql_access=sqlaccess.load() if sql_local() else None)
     atomic_write(P.nft, nft, 0o600)
     run(["nft", "-c", "-f", str(P.nft)], timeout=60)
     run(["nft", "-f", str(P.nft)], timeout=60)
@@ -1862,12 +1973,26 @@ def process() -> int:
                 if not start_backup(user, name):
                     log("backup: one is running already")
                 publish()
+            elif action == "sql-readonly":      # Admin -> System -> Results database access (sqlaccess.py)
+                sql_readonly(req, user, name)
+                publish()
+            elif action == "sql-incoming":
+                sql_incoming(req, user, name)
+                publish()
             else:
                 log(f"unknown action {action!r} ignored")
-        except (AgentError, RuleError, LocalLlmError, PatchError, BackupError, OSError, subprocess.TimeoutExpired,
-                ValueError) as ex:
+        except (AgentError, RuleError, LocalLlmError, PatchError, BackupError, SqlAccessError, OSError,
+                subprocess.TimeoutExpired, ValueError) as ex:
             rc = 1
-            log(f"{action} failed: {ex}")
+            secret = str(req.get("password") or "")           # sql-readonly: never in the journal
+            log(f"{action} failed: {str(ex).replace(secret, '***') if secret else ex}")
+            if action in ("sql-readonly", "sql-incoming"):
+                sa = sqlaccess.load()
+                msg, pw = str(ex), str(req.get("password") or "")
+                sa["error"] = f"{now()}: {msg.replace(pw, '***') if pw else msg}"[:1000]
+                sqlaccess.save(sa)
+                publish()
+                continue
             if action in ("backup-settings", "backup-now"):
                 st = backup._read(backup.STATE)
                 st["error"] = f"{now()}: {ex}"[:1000]
@@ -2079,6 +2204,10 @@ def main(argv=None) -> int:
                 local_llm.reconcile()
             except (AgentError, LocalLlmError, OSError, subprocess.TimeoutExpired) as ex:
                 log(f"built-in LLM: {ex}")
+            try:
+                sql_access_reconcile()
+            except (AgentError, OSError, subprocess.SubprocessError, ValueError) as ex:
+                _log_once("sql-access", f"results database proxy: {ex}")
             try:
                 if backup_check() == "started":
                     log("backup: the scheduled backup started")

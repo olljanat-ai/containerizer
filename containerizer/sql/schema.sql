@@ -3058,6 +3058,7 @@ BEGIN
     DELETE [${schema}].LlmJob WHERE ApplicationId = @ApplicationId OR SourceKey = @key;
     DELETE [${schema}].LlmUsage WHERE ApplicationId = @ApplicationId OR SourceKey = @key;
     DELETE [${schema}].SandboxCheck WHERE ApplicationId = @ApplicationId;
+    DELETE [${schema}].InventoryItem WHERE ApplicationId = @ApplicationId;      -- (schema 60)
     DELETE [${schema}].ApplicationAssessment WHERE ApplicationId = @ApplicationId;  -- and, cascaded, what hangs off them
     DELETE [${schema}].Component WHERE ApplicationId = @ApplicationId;
     DELETE [${schema}].Application WHERE ApplicationId = @ApplicationId;
@@ -3449,4 +3450,52 @@ GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].MappingSnapshot) EXEC [${schema}].RecordMappingSnapshot;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 59) INSERT [${schema}].SchemaVersion (Version) VALUES (59);
+GO
+
+-- 60: the inventory (inventory.py): per application, the main binaries of its A-rated builds, the databases its
+-- connection strings name and the external services its configuration and code name, with when each was first and
+-- last found. sqlstore.store_assessment keeps it (inventory.sync); init_schema fills it once from the latest
+-- assessments (inventory.backfill). The results page /inventory reads vInventory.
+IF OBJECT_ID(N'[${schema}].InventoryItem') IS NULL
+CREATE TABLE [${schema}].InventoryItem (
+    ItemId            int IDENTITY(1,1) NOT NULL CONSTRAINT PK_InventoryItem PRIMARY KEY,
+    ApplicationId     int            NOT NULL CONSTRAINT FK_InventoryItem_Application REFERENCES [${schema}].Application (ApplicationId),
+    Kind              nvarchar(20)   NOT NULL CONSTRAINT CK_InventoryItem_Kind CHECK (Kind IN (N'binary', N'database', N'service')),
+    ComponentName     nvarchar(200)  NULL,
+    Name              nvarchar(200)  NOT NULL,      -- the binary, the database, the host or service
+    Server            nvarchar(200)  NULL,          -- database: its server; NServiceBus: the endpoint
+    Port              int            NULL,
+    Detail            nvarchar(100)  NULL,          -- binary: the role; database: its type; service: the scheme
+    Source            nvarchar(400)  NULL,          -- binary: the target framework; else the setting or file:line
+    FirstSeenAt       datetime2(0)   NOT NULL CONSTRAINT DF_InventoryItem_FirstSeenAt DEFAULT SYSUTCDATETIME(),
+    LastSeenAt        datetime2(0)   NOT NULL CONSTRAINT DF_InventoryItem_LastSeenAt DEFAULT SYSUTCDATETIME(),
+    FirstAssessmentId int            NULL,
+    LastAssessmentId  int            NULL,
+    RemovedAt         datetime2(0)   NULL           -- the next scan no longer found it
+);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_InventoryItem_App' AND object_id = OBJECT_ID(N'[${schema}].InventoryItem'))
+CREATE INDEX IX_InventoryItem_App ON [${schema}].InventoryItem (ApplicationId, Kind);
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_InventoryItem_Name' AND object_id = OBJECT_ID(N'[${schema}].InventoryItem'))
+CREATE INDEX IX_InventoryItem_Name ON [${schema}].InventoryItem (Kind, Name);
+GO
+CREATE OR ALTER VIEW [${schema}].vInventory AS
+SELECT i.ItemId, i.ApplicationId, COALESCE(a.DisplayName, a.Name) AS ApplicationName, a.RepositoryUrl, a.SourcePath,
+       p.ProductId, p.Name AS ProductName, bu.Name AS BusinessUnitName,
+       i.Kind, i.ComponentName, i.Name, i.Server, i.Port, i.Detail, i.Source, i.FirstSeenAt, i.LastSeenAt,
+       i.FirstAssessmentId, i.LastAssessmentId, i.RemovedAt
+FROM [${schema}].InventoryItem i
+JOIN [${schema}].Application a ON a.ApplicationId = i.ApplicationId
+LEFT JOIN [${schema}].Product p ON p.ProductId = a.ProductId
+LEFT JOIN [${schema}].BusinessUnit bu ON bu.BusinessUnitId = p.BusinessUnitId
+WHERE a.Retired = 0
+  AND NOT EXISTS (SELECT 1 FROM [${schema}].vDisabledRepositoryUrl h WHERE h.RepositoryUrl = a.RepositoryUrl);
+GO
+GRANT SELECT, INSERT, UPDATE ON [${schema}].InventoryItem TO [${schema}_writer];
+GRANT SELECT ON [${schema}].vInventory TO [${schema}_reader];
+GRANT SELECT ON [${schema}].vInventory TO [${schema}_admin];
+GRANT SELECT ON [${schema}].vInventory TO [${schema}_writer];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 60) INSERT [${schema}].SchemaVersion (Version) VALUES (60);
 GO

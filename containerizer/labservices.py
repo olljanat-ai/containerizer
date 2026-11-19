@@ -247,6 +247,9 @@ _S3_LEAF = {"serviceurl": "s3:endpoint", "endpoint": "s3:endpoint", "endpointurl
 _MONGO = re.compile(r"(?i)^\s*mongodb(\+srv)?://")
 _AMQP = re.compile(r"(?i)^\s*amqps?://")
 _RABBIT_KEY = re.compile(r"(?i)rabbit|amqp|easynetq")
+# NServiceBus.RabbitMQ's connection string ("host=broker;username=...") under an NServiceBus key
+# (ConnectionStrings:NServiceBus/Transport, NServiceBus:Transport:ConnectionString)
+_NSB_RABBIT = re.compile(r"(?i)nservicebus")
 # the pieces of a client configuration in its own section: {service: (section, {leaf: secret key})}
 PARTS: dict[str, tuple[re.Pattern, dict[str, str]]] = {
     "mongodb": (re.compile(r"(?i)(^|:)[^:]*mongo[^:]*:"),
@@ -333,7 +336,9 @@ def classify(key: str, value) -> str | None:
         return _S3_LEAF[leaf]
     if isinstance(value, str) and _MONGO.search(value):
         return "mongodb"
-    if isinstance(value, str) and (_AMQP.search(value) or (_RABBIT_KEY.search(key) and re.search(r"(?i)\bhost\s*=", value))):
+    if isinstance(value, str) and (_AMQP.search(value) or (_RABBIT_KEY.search(key) and re.search(r"(?i)\bhost\s*=", value))
+                                   or _NSB_RABBIT.search(key) and re.search(r"(?i)\bhost\s*=", value)
+                                   and not re.search(r"(?i)\b(database|initial catalog|data source|server)\s*=", value)):
         return "rabbitmq"
     leaf = leaf.replace(".", "")
     smtp = smtp_kind(key, value)

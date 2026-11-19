@@ -267,6 +267,8 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
             facts.setdefault(k, v)
     if "port" in facts:
         facts["port"] = int(facts["port"])
+    from .inventory import config_connection_strings, database_facts, nservicebus_facts
+    nservicebus_facts(facts, p.packages)               # the endpoint's transport (inventory, finding nservicebus)
 
     facts["entry"] = (p.assembly_name or p.name) + ".dll" if p.kind_hint == "dotnet" else p.name
     # appsettings.json: connection strings, Kestrel endpoints, folders, secrets
@@ -324,6 +326,10 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         lab = settings_facts(flat)
         if lab:
             facts["lab_settings"] = lab
+        # the databases its connection strings name (server and database, no credentials): the inventory
+        dbs = database_facts([(k, v, lab.get(k)) for k, v in flat])
+        if dbs:
+            facts["databases"] = dbs
         # Serilog sinks that write only to files: containers should log to stdout
         wt = (cfg.get("Serilog") or {}).get("WriteTo") if isinstance(cfg.get("Serilog"), dict) else None
         if isinstance(wt, list):
@@ -501,4 +507,18 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
                     break
             if "dist_dir" not in facts and "react-scripts" in p.packages:
                 facts["dist_dir"] = "build"
+    # .NET Framework: the <connectionStrings> of web.config / app.config (the build's transforms aside)
+    for f in p.files:
+        if f.parent == p.dir and f.name.lower() in ("web.config", "app.config"):
+            try:
+                if f.stat().st_size > 1024 * 1024:
+                    continue
+                entries = config_connection_strings(f.read_text(encoding="utf-8-sig", errors="replace"))
+            except OSError:
+                continue
+            from .labservices import classify
+            have = {d["key"] for d in facts.get("databases") or []}
+            more = [d for d in database_facts([(k, v, classify(k, v)) for k, v in entries]) if d["key"] not in have]
+            if more:
+                facts["databases"] = (facts.get("databases") or []) + more
     return facts
