@@ -207,3 +207,12 @@ def test_working_make_it_a_patches_count_as_a():
     assert trends.render_trends(plain, "all").count("patches=1") == 1      # only the switch: other links keep the mode
     assert html.count("patches=1") > 2
     assert trends.patches_on({"patches": ["1"]}) and not trends.patches_on({})
+
+
+def test_every_labelled_column_shows_its_total():
+    d = trends.compute(history(), NOW, None)
+    f = trends.filtered(d, None, None)
+    svg = trends.rating_columns(f)
+    totals = [sum(c.values()) for c in f["dist"]]
+    shown = [int(v.replace(",", "")) for v in re.findall(r"<text class='val'[^>]*>([\d,]+)</text>", svg)]
+    assert shown == [t for t in totals if t] and len(shown) > 1

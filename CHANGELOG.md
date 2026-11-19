@@ -8,6 +8,11 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.18 (2026-11-19)
+
+- **Readiness over time**: every column of *Applications by rating* shows its total on top, not only the latest
+  one (when there are too many columns for the numbers to fit, every second or third column, always with the latest).
+
 ## 0.51.17 (2026-11-19)
 
 - **Inventory** (results site → Inventory, `/inventory`): from source code to binaries, databases and external

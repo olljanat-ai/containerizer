@@ -284,10 +284,11 @@ def rating_columns(data: dict) -> str:
                            f"working Make it A patch</title></rect>")
             base = top
         out.append("</g>")
-    last = len(totals) - 1
-    if last >= 0 and totals[last]:
-        out.append(f"<text class='val' x='{x(last):.1f}' y='{y(totals[last]) - 6:.1f}' text-anchor='middle'>"
-                   f"{totals[last]:,}</text>")
+    need = 8 * len(f"{max(totals, default=0):,}") + 8       # a total's width in viewBox units, and a gap
+    every = max(1, -(-int(need) // max(int(slot), 1)))       # every column when they fit (always the latest)
+    for i, t in enumerate(totals):
+        if t and (len(totals) - 1 - i) % every == 0:
+            out.append(f"<text class='val' x='{x(i):.1f}' y='{y(t) - 6:.1f}' text-anchor='middle'>{t:,}</text>")
     out.append("</svg>")
     return "".join(out)
 
