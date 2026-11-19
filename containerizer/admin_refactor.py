@@ -379,8 +379,12 @@ def _verification(res: dict, st: str) -> str:
         parts.append("<li>Not built: no component this patch changes was built.</li>")
     for v in res.get("verification") or []:
         ok = v.get("status") in ("ok", "ok-external")
-        parts.append(f"<li><span class='st {'st-ok' if ok else 'st-bad'}'>{e(VERIFY_TEXT.get(v.get('status'), v.get('status')))}</span> "
+        same = bool(v.get("same_before"))      # fails the same way without the patch: not the patch's doing
+        parts.append(f"<li><span class='st {'st-ok' if ok else 'st-off' if same else 'st-bad'}'>"
+                     f"{e(VERIFY_TEXT.get(v.get('status'), v.get('status')))}</span> "
                      f"<b>{e(v.get('component'))}</b>"
+                     + (" <span class='small'>the same without the patch: the patch did not break it, and its "
+                        "build or run has to work before a patch can be checked here</span>" if same else "")
                      + (f" <span class='muted small'>{e(v.get('detail'))}</span>" if v.get("detail") else "")
                      + (f" <span class='muted small'>(smoke test without production services)</span>" if v.get("mode") == "smoke" else "")
                      + (f"<details><summary>Log tail</summary><pre class='code'>{e(v['log_tail'])}</pre></details>"
@@ -470,7 +474,7 @@ def _make_it_a(res: dict, pl: dict, st: str) -> str:
             f"<tr><td class='num'>{int(x.get('pass') or 0)}</td><td class='num'>{int(x.get('round') or 0)}</td>"
             f"<td>{e(KIND_TEXT.get(x.get('kind'), x.get('kind') or ''))}</td><td class='num'>{int(x.get('files') or 0)}</td>"
             f"<td class='num'>{int(x.get('calls') or 0)}</td><td class='num'>{int(x.get('changes') or 0)}</td>"
-            f"<td class='small'>{e(', '.join(str(v.get('component')) + ': ' + VERIFY_TEXT.get(v.get('status'), str(v.get('status'))) for v in x.get('verification') or []))}</td>"
+            f"<td class='small'>{e(', '.join(str(v.get('component')) + ': ' + VERIFY_TEXT.get(v.get('status'), str(v.get('status'))) + (' (the same without the patch)' if v.get('same_before') else '') for v in x.get('verification') or []))}</td>"
             f"<td>{badge(x['rating']) if x.get('rating') else ''}</td></tr>" for x in res.get("loop") or [])
         if rows:
             out.append("<table><thead><tr><th class='num'>Pass</th><th class='num'>Round</th><th>Step</th>"
