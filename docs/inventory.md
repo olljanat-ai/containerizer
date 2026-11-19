@@ -23,6 +23,14 @@ latest A-rated one): those items are first seen at that update. The databases co
 ![The inventory: the databases tab searched for a server](images/results-inventory.png#only-light){ .cz-shot }
 ![The inventory: the databases tab searched for a server](images/results-inventory-dark.png#only-dark){ .cz-shot }
 
+**External services** lists each service once (its host and port), with how many applications use it and which
+(hover over an application for its components and the files and lines that name the service). Pick a **port** from
+the drop-down (each port there is, with how many services use it), and type part of an **FQDN or IP address** to
+narrow the list down; the search box still searches every column.
+
+![The inventory: external services on port 443, each with the applications that use it](images/results-inventory-services.png#only-light){ .cz-shot }
+![The inventory: external services on port 443, each with the applications that use it](images/results-inventory-services-dark.png#only-dark){ .cz-shot }
+
 The same lists are in the [API](api.md): `GET /api/v1/inventory/binaries`, `/databases` and `/services`, with the
 same search and filters by application, product, name and server.
 
