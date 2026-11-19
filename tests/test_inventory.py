@@ -230,3 +230,36 @@ def test_the_inventory_api_is_read_only():
     with pytest.raises(ApiError) as ex:
         api.route(None, "GET", "/api/v1/inventory/binaries", {"limit": ["many"]}, None)
     assert ex.value.status == 400
+
+
+def test_external_services_are_combined_with_the_applications_that_use_them():
+    """One row per service (name and port), the applications that use it in one cell; the port drop-down and the FQDN
+    or IP address filter, kept in the query."""
+    from datetime import datetime
+
+    def row(app_id, app, comp, name, port, source, first, removed=None):
+        return {"ApplicationId": app_id, "ApplicationName": app, "ProductName": "Payments", "ComponentName": comp,
+                "Name": name, "Server": None, "Port": port, "Detail": "https", "Source": source,
+                "RepositoryUrl": "https://git.example.com/acme/x", "FirstSeenAt": datetime(2026, 11, first),
+                "LastSeenAt": datetime(2026, 11, 19), "RemovedAt": removed}
+    rows = [row(7, "billing", "Billing.Api", "api.payments.example.com", 443, "appsettings.json:3", 2),
+            row(7, "billing", "Billing.Worker", "api.payments.example.com", 443, "appsettings.json:5", 3),
+            row(9, "orders", "Orders.Api", "api.payments.example.com", 443, "Program.cs:12", 1),
+            row(9, "orders", "Orders.Api", "api.payments.example.com", 8443, "Program.cs:20", 4),
+            row(9, "orders", "Orders.Api", "10.1.2.3", 8080, "appsettings.json:9", 5, datetime(2026, 11, 18))]
+    groups = inventory.combine(rows)
+    assert [(g["Name"], g["Port"], sorted(g["apps"])) for g in groups] == [
+        ("api.payments.example.com", 443, [7, 9]), ("api.payments.example.com", 8443, [9]), ("10.1.2.3", 8080, [9])]
+    assert groups[0]["FirstSeenAt"] == datetime(2026, 11, 1) and groups[0]["RemovedAt"] is None
+    assert groups[2]["RemovedAt"] == datetime(2026, 11, 18)
+    assert groups[0]["apps"][7]["where"] == ["Billing.Api (appsettings.json:3)", "Billing.Worker (appsettings.json:5)"]
+    counts = {"service": 3, "ports": [(None, 1), (443, 1), (8080, 1), (8443, 1)]}
+    body = inventory.render(rows, counts, "service", "", True, filters={"port": "443", "host": "payments"})
+    table = body[body.index("<table>"):]
+    assert table.count("<code>api.payments.example.com</code>") == 2 and table.count("<tr>") == 4
+    assert "href='/app/7' title='Billing.Api (appsettings.json:3); Billing.Worker (appsettings.json:5)'>billing</a>" in table
+    assert "<option value='443' selected>443 (1)</option>" in body and "<option value='none'>No port (1)</option>" in body
+    assert "name='host' value='payments'" in body
+    assert inventory.parse_filters({"port": ["443; drop"], "host": [" 10.1 .2 "]}) == {"port": "", "host": "10.1.2"}
+    assert inventory.keep_query({"kind": ["service"], "port": ["443"], "host": ["10.1"]}) == "kind=service&port=443&host=10.1"
+    assert "port=" not in inventory.keep_query({"kind": ["binary"], "port": ["443"]})

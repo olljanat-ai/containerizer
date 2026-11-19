@@ -293,45 +293,148 @@ def parse_query(q: dict) -> tuple[str, str, bool]:
     return kind, text, (q.get("removed") or [""])[0] == "1"
 
 
+def parse_filters(q: dict) -> dict:
+    """The external services' filters: {"port": a port number, "none" (no port) or "", "host": part of the FQDN or IP
+    address}."""
+    port = (q.get("port") or [""])[0]
+    port = port if re.fullmatch(r"\d{1,5}|none", port) else ""
+    host = "".join((q.get("host") or [""])[0].split())[:100]
+    return {"port": port, "host": host}
+
+
 def keep_query(q: dict) -> str:
     kind, text, removed = parse_query(q)
-    return urlencode([(k, v) for k, v in (("kind", kind), ("q", text), ("removed", "1" if removed else "")) if v])
+    f = parse_filters(q) if kind == "service" else {}
+    return urlencode([(k, v) for k, v in (("kind", kind), ("q", text), ("removed", "1" if removed else ""),
+                                          ("port", f.get("port")), ("host", f.get("host"))) if v])
 
 
-def load(conn, kind: str, text: str, removed: bool) -> tuple[list[dict], dict]:
-    """The items of one kind (matching the search in any column), and the count of each kind."""
+SERVICE_ROWS = 20000                 # the external services' rows read to combine (each service once, MAX_ROWS shown)
+
+
+def _like(text: str) -> str:
+    return "%" + re.sub(r"([%_\[])", r"[\1]", text) + "%"
+
+
+def load(conn, kind: str, text: str, removed: bool, filters: dict | None = None) -> tuple[list[dict], dict]:
+    """The items of one kind (matching the search in any column; external services also by port and host), the count of
+    each kind (external services: each service once), and for external services the ports to pick from ("ports":
+    [(port, services)])."""
     cur = conn.cursor(as_dict=True)
     where, params = ["Kind = %s"], [kind]
     if not removed:
         where.append("RemovedAt IS NULL")
+    f = filters or {}
+    if kind == "service" and f.get("port") == "none":
+        where.append("Port IS NULL")
+    elif kind == "service" and f.get("port"):
+        where.append("Port = %s")
+        params.append(int(f["port"]))
+    if kind == "service" and f.get("host"):
+        where.append("Name LIKE %s")
+        params.append(_like(f["host"]))
     if text:
-        like = "%" + re.sub(r"([%_\[])", r"[\1]", text) + "%"
         where.append("(Name LIKE %s OR Server LIKE %s OR ComponentName LIKE %s OR ApplicationName LIKE %s "
                      "OR ProductName LIKE %s OR Source LIKE %s OR Detail LIKE %s OR RepositoryUrl LIKE %s)")
-        params += [like] * 8
-    cur.execute(f"SELECT TOP ({MAX_ROWS + 1}) * FROM cz.vInventory WHERE {' AND '.join(where)} "
+        params += [_like(text)] * 8
+    top = SERVICE_ROWS if kind == "service" else MAX_ROWS + 1
+    cur.execute(f"SELECT TOP ({top}) * FROM cz.vInventory WHERE {' AND '.join(where)} "
                 "ORDER BY Name, Server, ApplicationName, ComponentName", tuple(params))
     rows = cur.fetchall()
-    cur.execute("SELECT Kind, COUNT(*) AS N FROM cz.vInventory WHERE RemovedAt IS NULL GROUP BY Kind")
-    counts = {r["Kind"]: r["N"] for r in cur.fetchall()}
+    cur.execute("SELECT Kind, COUNT(*) AS N FROM cz.vInventory WHERE RemovedAt IS NULL AND Kind <> N'service' GROUP BY Kind "
+                "UNION ALL SELECT N'service', COUNT(*) FROM (SELECT DISTINCT Name, Port FROM cz.vInventory "
+                "WHERE RemovedAt IS NULL AND Kind = N'service') s")
+    counts = {r["Kind"]: r["N"] for r in cur.fetchall() if r["N"]}
+    if kind == "service":
+        cur.execute("SELECT Port, COUNT(DISTINCT Name) AS N FROM cz.vInventory WHERE Kind = N'service' "
+                    f"{'' if removed else 'AND RemovedAt IS NULL '}GROUP BY Port ORDER BY Port")
+        counts["ports"] = [(r["Port"], r["N"]) for r in cur.fetchall()]
     return rows, counts
+
+
+def combine(rows: list[dict]) -> list[dict]:
+    """The external services' rows, one per service (name and port): the applications that use it, with their
+    components and where they name it; first seen the earliest, last seen the latest; removed only when every row is."""
+    out: dict = {}
+    for r in rows:
+        g = out.setdefault((r["Name"], r.get("Port")), {"Name": r["Name"], "Port": r.get("Port"), "protocols": [],
+                                                         "servers": [], "apps": {}, "FirstSeenAt": None,
+                                                         "LastSeenAt": None, "RemovedAt": None, "live": False})
+        for k, v in (("protocols", r.get("Detail")), ("servers", r.get("Server"))):
+            if v and v not in g[k]:
+                g[k].append(v)
+        a = g["apps"].setdefault(r["ApplicationId"], {"name": r.get("ApplicationName") or "", "product": r.get("ProductName"),
+                                                      "where": []})
+        w = " ".join(x for x in (r.get("ComponentName"), f"({r['Source']})" if r.get("Source") else "") if x)
+        if w and w not in a["where"]:
+            a["where"].append(w)
+        if r.get("FirstSeenAt") and (g["FirstSeenAt"] is None or r["FirstSeenAt"] < g["FirstSeenAt"]):
+            g["FirstSeenAt"] = r["FirstSeenAt"]
+        if r.get("LastSeenAt") and (g["LastSeenAt"] is None or r["LastSeenAt"] > g["LastSeenAt"]):
+            g["LastSeenAt"] = r["LastSeenAt"]
+        if r.get("RemovedAt") is None:
+            g["live"] = True
+        elif g["RemovedAt"] is None or r["RemovedAt"] > g["RemovedAt"]:
+            g["RemovedAt"] = r["RemovedAt"]
+    for g in out.values():
+        if g["live"]:
+            g["RemovedAt"] = None
+    return list(out.values())
+
+
+def _service_filters(counts: dict, f: dict) -> str:
+    """The external services' Port drop-down (the ports there are, with how many services use each) and the FQDN or IP
+    address filter."""
+    opts = ["<option value=''>Any port</option>"]
+    for port, n in counts.get("ports") or []:
+        v = str(port) if port is not None else "none"
+        opts.append(f"<option value='{v}'{' selected' if f.get('port') == v else ''}>"
+                    f"{e(str(port) if port is not None else 'No port')} ({int(n)})</option>")
+    return (f"<select name='port' aria-label='Port'>{''.join(opts)}</select> "
+            f"<input name='host' value='{e(f.get('host') or '')}' placeholder='FQDN or IP address' "
+            f"aria-label='FQDN or IP address' maxlength='100' class='host'> ")
 
 
 def _d(t) -> str:
     return t.strftime("%Y-%m-%d") if t else ""
 
 
-def render(rows: list[dict], counts: dict, kind: str, text: str, removed: bool, nav: str = "") -> str:
+def _services(rows: list[dict]) -> tuple[str, int]:
+    """The external services' table: one row per service, the applications that use it in one cell."""
+    groups = combine(rows)
+    trs = []
+    for g in groups[:MAX_ROWS]:
+        apps = sorted(g["apps"].items(), key=lambda kv: kv[1]["name"].casefold())
+        links = [f"<a href='/app/{int(aid)}' title='{e('; '.join(a['where']))}'>{e(a['name'])}</a>"
+                 + (f" <span class='muted small'>{e(a['product'])}</span>" if a.get("product") else "") for aid, a in apps]
+        cell = ", ".join(links[:10]) + (f"<details class='more'><summary>{len(links) - 10} more</summary>"
+                                        f"{', '.join(links[10:])}</details>" if len(links) > 10 else "")
+        gone = f" <span class='st st-off'>removed {_d(g['RemovedAt'])}</span>" if g["RemovedAt"] else ""
+        port = g["Port"] if g["Port"] else ", ".join(g["servers"])     # an NServiceBus transport: its endpoints
+        trs.append(f"<tr><td><code>{e(g['Name'])}</code>{gone}</td><td>{e(str(port or ''))}</td>"
+                   f"<td>{e(', '.join(g['protocols']))}</td><td class='num'>{len(apps)}</td><td>{cell}</td>"
+                   f"<td class='small nowrap'>{_d(g['FirstSeenAt'])}<div class='muted'>{_d(g['LastSeenAt'])}</div></td></tr>")
+    table = ("<table><thead><tr><th>Service</th><th>Port</th><th>Protocol</th><th>Applications</th>"
+             "<th>Used by</th><th>First seen<div class='muted'>last seen</div></th></tr></thead>"
+             f"<tbody>{''.join(trs) or '<tr><td colspan=6 class=muted>Nothing found.</td></tr>'}</tbody></table>")
+    return table, len(groups)
+
+
+def render(rows: list[dict], counts: dict, kind: str, text: str, removed: bool, nav: str = "",
+           filters: dict | None = None) -> str:
     from .webui import _nav, page
     tabs = "".join(
         f"<a class='chip{' on' if k == kind else ''}' href='/inventory?{e(urlencode({'kind': k, **({'q': text} if text else {})}))}'"
         f"{' aria-current=page' if k == kind else ''}>{e(t)} <span class='muted'>{int(counts.get(k, 0))}</span></a>"
         for k, t in KINDS.items())
-    more = len(rows) > MAX_ROWS
-    rows = rows[:MAX_ROWS]
+    f = filters or {}
+    if kind == "service":                  # each service once, with the applications that use it
+        table, n = _services(rows)
+        more, rows = n > MAX_ROWS or len(rows) >= SERVICE_ROWS, []
+    else:
+        more, rows = len(rows) > MAX_ROWS, rows[:MAX_ROWS]
     head = {"binary": ("Binary", "Role", "Target framework"),
-            "database": ("Database", "Server", "Type and setting"),
-            "service": ("Service", "Port", "Protocol and where")}[kind]
+            "database": ("Database", "Server", "Type and setting"), "service": ("", "", "")}[kind]
     trs = []
     for r in rows:
         app = (f"<a href='/app/{int(r['ApplicationId'])}'>{e(r['ApplicationName'] or '')}</a>"
@@ -342,9 +445,6 @@ def render(rows: list[dict], counts: dict, kind: str, text: str, removed: bool, 
         elif kind == "database":
             srv = (r.get("Server") or "") + (f",{r['Port']}" if r.get("Port") else "")
             a, b = f"<code>{e(srv)}</code>" if srv else "", f"{e(r.get('Detail') or '')} <span class='muted small'>{e(r.get('Source') or '')}</span>"
-        else:
-            a = e(str(r.get("Port") or r.get("Server") or ""))
-            b = f"{e(r.get('Detail') or '')} <span class='muted small'>{e(r.get('Source') or '')}</span>"
         gone = f" <span class='st st-off'>removed {_d(r.get('RemovedAt'))}</span>" if r.get("RemovedAt") else ""
         repo = r.get("RepositoryUrl") or ""
         repo_html = (f"<a href='{e(repo)}' rel='noopener noreferrer' target='_blank'>{e(repo.rstrip('/').rsplit('/', 1)[-1])}</a>"
@@ -359,13 +459,16 @@ def render(rows: list[dict], counts: dict, kind: str, text: str, removed: bool, 
                         "NServiceBus transports of their endpoints."}[kind]
     form = (f"<form method='get' action='/inventory' class='invsearch'><input type='hidden' name='kind' value='{e(kind)}'>"
             f"<input name='q' value='{e(text)}' placeholder='Search: name, server, application, repository' "
-            f"aria-label='Search the inventory' maxlength='100'> "
+            f"aria-label='Search the inventory' maxlength='100'> {_service_filters(counts, f) if kind == 'service' else ''}"
             f"<label class='check'><input type='checkbox' name='removed' value='1'{' checked' if removed else ''}> "
             f"Also removed</label> <button>Search</button></form>")
-    table = (f"<table><thead><tr><th>{head[0]}</th><th>{head[1]}</th><th>{head[2]}</th><th>Application</th>"
-             f"<th>Component</th><th>Repository</th><th>First seen<div class='muted'>last seen</div></th></tr></thead>"
-             f"<tbody>{''.join(trs) or '<tr><td colspan=7 class=muted>Nothing found.</td></tr>'}</tbody></table>"
-             + (f"<p class='muted small'>The first {MAX_ROWS} only: search to narrow it down.</p>" if more else ""))
+    if kind == "service":
+        table += f"<p class='muted small'>The first {MAX_ROWS} only: search to narrow it down.</p>" if more else ""
+    else:
+        table = (f"<table><thead><tr><th>{head[0]}</th><th>{head[1]}</th><th>{head[2]}</th><th>Application</th>"
+                 f"<th>Component</th><th>Repository</th><th>First seen<div class='muted'>last seen</div></th></tr></thead>"
+                 f"<tbody>{''.join(trs) or '<tr><td colspan=7 class=muted>Nothing found.</td></tr>'}</tbody></table>"
+                 + (f"<p class='muted small'>The first {MAX_ROWS} only: search to narrow it down.</p>" if more else ""))
     return page("Inventory", f"""{_nav(nav)}
 <header><h1>Inventory</h1><p class='lead'>From source code to binaries, databases and external services.</p>
 <p class='muted small'><a href='/'>Readiness</a> · <a href='/trends'>Trends over time</a> · <a href='/connectivity'>Connectivity</a></p>

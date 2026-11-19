@@ -1589,7 +1589,7 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
-.invsearch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.invsearch input[name=q]{width:auto;flex:0 1 460px;min-width:260px}
+.invsearch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.invsearch input[name=q]{width:auto;flex:0 1 460px;min-width:260px}.invsearch input.host{width:auto;flex:0 1 240px;min-width:180px}.invsearch select{width:auto}
 .tag.auto{font-style:italic}.stateful-mark{display:inline-block;margin-left:6px;font-size:12px;padding:1px 6px;border:1px solid currentColor;border-radius:8px;opacity:.8;vertical-align:middle}
 .chips.tags{align-items:center}.chip.tagchip{font-size:13px;padding:2px 10px}
 span.role{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:1px 10px;font-size:13px;
@@ -1828,14 +1828,15 @@ def make_handler(connect, admin=None):
                 if u.path == "/inventory":         # binaries, databases, external services (inventory.py)
                     from . import inventory
                     kind, text, removed = inventory.parse_query(parse_qs(u.query))
+                    filters = inventory.parse_filters(parse_qs(u.query))
                     conn = connect()
                     try:
-                        rows, counts = inventory.load(conn, kind, text, removed)
+                        rows, counts = inventory.load(conn, kind, text, removed, filters)
                     except Exception:  # noqa: BLE001 - a database from before schema 60
                         rows, counts = [], {}
                     finally:
                         conn.close()
-                    return self._send(200, inventory.render(rows, counts, kind, text, removed, nav), head=head,
+                    return self._send(200, inventory.render(rows, counts, kind, text, removed, nav, filters), head=head,
                                       forms=True)          # its search is a form
                 if u.path == "/trends":
                     from . import trends
