@@ -867,7 +867,18 @@ def bulk_plan(adm, conn) -> dict:
     items.sort(key=lambda x: (x["payload"] is None, bool(x["patched"]), x.get("tokens", 0),
                               str(x["app"]["ApplicationName"]).lower()))
     parallel = int(settings.get("Parallel") or 1)
-    return {"items": items, "parallel": parallel, "speed": speed,
+    try:                                    # as the LLM queue page estimates: every LLM's requests at once together
+        from .admin_llmqueue import lanes
+        parallel = max(1, sum(int(ln["parallel"]) for ln in lanes(conn, settings)))
+    except Exception:  # noqa: BLE001 - the stored setting then
+        pass
+    ahead = []                              # what waits or runs in the LLM queue already: it comes first
+    try:
+        ahead = _rows(conn, "SELECT JobId, Kind, Model, InputChars, EstInputTokens FROM cz.LlmJob "
+                            "WHERE Status IN (N'approval', N'queued', N'running')")
+    except Exception:  # noqa: BLE001 - a database from before the queue
+        conn.rollback()
+    return {"items": items, "parallel": parallel, "speed": speed, "ahead": ahead,
             "total": speed.queue([x["job"] for x in items if x.get("job")], parallel) if any(x.get("job") for x in items)
             else None}
 
@@ -936,6 +947,14 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
            f"to {rf.MAX_CALLS_A} LLM calls per order).</p>" if all_ else
            ("<p>Every B-rated application that can be ordered has an order in the queue already.</p>" if total else
             "<p>No B-rated application can be ordered.</p>"))
+    ahead = plan.get("ahead") or []
+    if ahead and all_:                      # the queue's own jobs come first: the estimate with them
+        both = plan["speed"].queue(ahead + [x["job"] for x in (sel or all_)], plan["parallel"])
+        tot += (f"<p class='muted'>The LLM queue holds <a href='/admin/llm-queue'>{len(ahead)} job(s)</a> already "
+                f"({e(est_text(plan['speed'].queue(ahead, plan['parallel'])))}); with them, "
+                f"{'the ' + str(len(sel)) + ' order(s) under the limit' if sel else 'every order'}: "
+                f"{e(est_text(both))}. Estimates count the LLM's time with {plan['parallel']} request(s) at once; "
+                f"builds and verification run beside it.</p>")
     pick = (f"<form method='get' action='{BASE}/make-all-a' class='formrow'><label for='limit'>Orders under</label>"
             f"<input id='limit' name='limit' type='number' min='1' max='100000000' value='{limit}'>"
             f"<span>tokens each</span><label class='check'><input type='checkbox' name='untried' value='1'"
@@ -965,7 +984,8 @@ def make_all_a(adm, conn, s, a, q: dict | None = None) -> Response:
             "patch is verified and repaired, the patched copy assessed again; one that rates A and runs is deployed to "
             "the sandbox in place of the application's scan output. Start with the small ones to get the most applications to A for the "
             "LLM's time. Orders queued from this page are <b>approved</b> by you at once (they do not wait for "
-            "approval); they run one after another in the LLM queue, by its settings.</p>"
+            "approval); they run in the LLM queue by its settings, several at once where the LLM and the machine have "
+            "room.</p>"
             + tot + pick + form
             + "<table class='make-a'><thead><tr><th>Application</th><th>What changes</th><th class='num'>Tokens</th>"
               "<th>Estimate</th><th>Queue</th></tr></thead>"

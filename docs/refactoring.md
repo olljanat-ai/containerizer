@@ -307,7 +307,7 @@ second pass, when needed, take more, up to the limit of 16 calls.
 **Make it A: every B application** (Admin → Refactoring, administrators) lists every B-rated application with what
 changes and its order's estimate (tokens and LLM time), **smallest first**, with the running total of the LLM time
 up to each row, so the LLM's time goes to the cheapest wins first; a local LLM gets the most applications to A for
-its hours. Applications with an order in the queue already say so and link to it. The ones that a verified patch
+its hours. When the LLM queue holds jobs already, the page says how many and estimates the orders with them, since they come first; the LLM's time is divided by every LLM's requests at once, as on the LLM queue page. Applications with an order in the queue already say so and link to it. The ones that a verified patch
 makes A already (*Made A by a patch* on the front page: it builds, runs and rates A, merged or not, for the commit
 the latest scan assessed) link to that
 patch and are not queued again from here (order one on its application page for a new patch). The ones that cannot be ordered
