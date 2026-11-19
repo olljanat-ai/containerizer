@@ -281,7 +281,8 @@ def test_mssql_integrated_security_and_old_java(tmp_path):
           "spring.datasource.url=jdbc:sqlserver://db;databaseName=x;integratedSecurity=true\n")
     c = comp(assess(tmp_path), "orders")
     assert {"java-mssql-integrated-auth", "java-unsupported-version"} <= ids(c)
-    assert c.verdict == "refactor"
+    old = next(f for f in c.findings if f.rule.id == "java-unsupported-version")
+    assert old.rule.severity == "config" and c.verdict == "config"         # built and run on Java 8: an old Java alone does not need code changes
 
 
 def test_unknown_java_dependency_lowers_confidence(tmp_path):
@@ -330,6 +331,11 @@ def test_engine_ranges():
     assert engine_max_major(">=10 <15") == 14
     assert engine_max_major(">=18") is None
     assert engine_max_major("12.x || 14.x") == 14
+    assert engine_max_major("12 - 14") == 14
+    from containerizer.scan_node import engine_allows, engine_bounds
+    assert engine_bounds("^20.0.0 || ^22.0.0") == [(20, 20), (22, 22)] and engine_bounds(">14") == [(15, None)]
+    assert engine_allows("^20.0.0 || ^22.0.0", 22) and not engine_allows("^20.0.0 || ^22.0.0", 24)
+    assert engine_allows(">=18", 24) and not engine_allows(">=18 <20", 20) and engine_allows("*", 24)
 
 
 def test_workspaces_link_packages_and_root_is_not_deployed(tmp_path):

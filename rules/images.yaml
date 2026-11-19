@@ -26,7 +26,7 @@ node:
   build: node:20-bookworm-slim
   static: nginxinc/nginx-unprivileged:1.27-alpine
   runtime: node:20-bookworm-slim
-  # Node.js servers: built on the LTS line the app allows (engines.node), run on distroless (no shell,
+  # Node.js servers: built on the newest line the app allows (engines.node), run on distroless (no shell,
   # no npm, uid 65532). The slim image runs only start commands distroless cannot (shell syntax).
   server_lines: [22, 24]
   server_build_22: node:22-bookworm-slim
@@ -38,6 +38,13 @@ node:
   server_runtime_24: gcr.io/distroless/nodejs24-debian12:nonroot
   server_slim_22: node:22-bookworm-slim
   server_slim_24: node:24-bookworm-slim
+  # An app whose package.json engines.node (or a dependency's) allows only an out-of-support line runs on that
+  # line: its own images, which no longer get fixes. Not in the lock: `images --update` leaves them as they are.
+  legacy:
+    "14": {build: 'node:14-bullseye-slim', build_native: 'node:14-bullseye', runtime: 'gcr.io/distroless/nodejs14-debian11:nonroot', slim: 'node:14-bullseye-slim'}
+    "16": {build: 'node:16-bookworm-slim', build_native: 'node:16-bookworm', runtime: 'gcr.io/distroless/nodejs16-debian11:nonroot', slim: 'node:16-bookworm-slim'}
+    "18": {build: 'node:18-bookworm-slim', build_native: 'node:18-bookworm', runtime: 'gcr.io/distroless/nodejs18-debian12:nonroot', slim: 'node:18-bookworm-slim'}
+    "20": {build: 'node:20-bookworm-slim', build_native: 'node:20-bookworm', runtime: 'gcr.io/distroless/nodejs20-debian12:nonroot', slim: 'node:20-bookworm-slim'}
   app_uid: 65532
 python:
   # Python runs on the line it declares (.python-version, runtime.txt, requires-python), or the next

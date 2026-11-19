@@ -8,6 +8,28 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.25 (2026-11-19)
+
+- **Out-of-support Node.js and Java versions no longer keep an application at B.** An application is rated by
+  whether it runs in containers, not by whether its runtime or libraries are still supported:
+  - A dependency that refuses the image's Node.js line at install time (`EBADENGINE`, "The engine "node" is
+    incompatible", `ERR_PNPM_UNSUPPORTED_ENGINE`) was the finding **Requires an unsupported Node.js version** (needs
+    code changes, which Make it A could not make either: "nothing to change in code"). Now the build moves to the
+    newest Node.js line the dependency allows and tries again, and the line is kept for the next scans. npm's
+    strict-mode error (`notsup Required: {"node": ...}`) is recognized too.
+  - Node.js 14, 16, 18 and 20 have their own images (out of support, not updated any more, as for old .NET). An
+    application whose `engines.node` allows only those runs on its line instead of on 22 (older ones run on 14,
+    without enforcing the declaration at install time).
+  - **Pinned to an end-of-life Node.js line** and **Java 7 or older** are configuration findings now (was: needs
+    code changes): nothing to change in code, the upgrade is a separate project. Java 7 and older were already
+    built and run on Java 8.
+  - A finding learned from a failed build or run of a component is dropped once that component builds and runs.
+- **Run failed: "The application '$(AssemblyName.Replace(' ', '_')).dll' does not exist"**: an `AssemblyName` written
+  as an MSBuild expression was taken as the name itself, so the component was named after the expression and the
+  container started a dll that does not exist. Property references and the string functions `Replace`, `ToLower`,
+  `ToUpper` and `Trim` are evaluated now (`$(MSBuildProjectName).Api`, `$(AssemblyName.Replace(' ', '_'))`); anything
+  else falls back to the project file's name, MSBuild's default.
+
 ## 0.51.24 (2026-11-19)
 
 - **Inventory → External services**: the FQDN or IP address search field is a drop-down: **All**, **FQDN** (services

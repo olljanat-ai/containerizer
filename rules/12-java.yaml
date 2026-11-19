@@ -190,17 +190,17 @@ rules:
       all:
         - property: {JavaVersion: '[1-7]'}
         - not: {role: 'test|library|tool'}
-    severity: refactor
+    severity: config
     category: runtime
-    effort: 3
+    effort: 0.5
     title: Java 7 or older
     why: >-
-      The build targets Java 7 or older. No maintained JDK or JRE container image exists for these
-      versions (Eclipse Temurin starts at Java 8), and the libraries of that era often fail on a
-      newer JVM (removed Java EE modules, illegal reflective access).
+      The build targets Java 7 or older, for which no maintained JDK or JRE container image exists (Eclipse
+      Temurin starts at Java 8). It is containerized without code changes: the JDK 8 image compiles that source
+      level and the Java 8 runtime runs its class files.
     fix: >-
-      Raise the source/target to Java 8 at least, preferably 17 or 21, update the libraries that
-      break, and run the tests on that JVM before containerizing.
+      Nothing to change in code: the generated Dockerfile builds and runs the application on Java 8. Moving to
+      Java 17 or 21 is a separate upgrade, not part of containerizing the application.
     refs:
       - https://adoptium.net/support/
 

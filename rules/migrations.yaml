@@ -1014,6 +1014,7 @@ migrations:
     replace: Java 7 or older
     with: Java 17 or 21 (LTS)
     steps:
+      - Not needed to containerize the application (it is built and run on Java 8); do it as a separate upgrade.
       - Raise maven.compiler.release (or Gradle toolchain) to 17 or 21 and update the build plugins.
       - Update libraries that use removed Java EE modules (JAXB, JAX-WS, javax.activation) by adding them as dependencies, and libraries that use illegal reflective access.
       - Run the full test suite on the new JVM and fix the failures.
@@ -1083,6 +1084,7 @@ migrations:
     replace: An end-of-life Node.js line
     with: the active Node.js LTS line (22 or 24)
     steps:
+      - Not needed to containerize the application (it runs on the Node.js line it allows); do it as a separate upgrade.
       - Update engines.node and the CI/runtime version to the LTS line.
       - Update dependencies that do not support it (native addons, old build tools), regenerate the lockfile, and run the tests.
     verify:

@@ -326,12 +326,52 @@ process.exit(1);
 """
 
 
-def node_line(props: dict) -> int:
-    lines = sorted(int(x) for x in _images()["node"].get("server_lines", [22, 24]))
+def node_lines() -> list[int]:
+    """The Node.js lines there is an image for: the supported ones and the out-of-support ones (legacy)."""
+    im = _images()["node"]
+    return sorted({int(x) for x in im.get("server_lines", [22, 24])} | {int(x) for x in im.get("legacy") or {}})
+
+
+def node_image(kind: str, line: int) -> str:
+    """The image of a line: kind build, build_native, runtime or slim."""
+    im = _images()["node"]
+    old = {str(k): v for k, v in (im.get("legacy") or {}).items()}.get(str(line))
+    return old[kind] if old else im[f"server_{kind}_{line}"]
+
+
+def node_line(props: dict, engine: str | None = None) -> int:
+    """The Node.js line the image uses: the newest supported one, or the newest one the application allows
+    (package.json engines.node), an out-of-support line included: the application runs on the Node.js it was
+    written for. `engine` is the range of a dependency that refused the line (plan node_engine): the newest line
+    both allow, else the newest one the dependency allows."""
+    from .scan_node import engine_allows
+    lines = node_lines()
     mx = props.get("NodeEngineMax")
     if mx and mx.isdigit():
-        return next((x for x in reversed(lines) if x <= int(mx)), lines[0])
-    return lines[-1]
+        own = next((x for x in reversed(lines) if x <= int(mx)), lines[0])
+    else:
+        own = max(int(x) for x in _images()["node"].get("server_lines", [22, 24]))
+    if not engine:
+        return own
+    ok = [x for x in lines if engine_allows(engine, x)]
+    return next((x for x in reversed(ok) if x <= own), ok[-1] if ok else own)
+
+
+def apply_node_engine(plan: dict, props: dict | None = None) -> None:
+    """The plan's Node.js line for its `node_engine` (the range a dependency requires, from the build's engine
+    error) and the application's own engines.node. A range no image satisfies is not enforced at install time:
+    the application is built and run on the nearest line instead of being held back by the declaration."""
+    from .scan_node import engine_allows
+    props = props if props is not None else plan.get("node_props") or {}
+    dep = plan.get("node_engine") or ""
+    line = node_line(props, dep or None)
+    plan["node"] = line
+    own = props.get("NodeEngine") or ""
+    if (dep and not engine_allows(dep, line)) or (own and not engine_allows(own, line)):
+        plan["build_env"] = {**(plan.get("build_env") or {}), "npm_config_engine_strict": "false"}
+        plan["ignore_engines"] = True
+    elif plan.pop("ignore_engines", None):
+        plan["build_env"] = {k: v for k, v in (plan.get("build_env") or {}).items() if k != "npm_config_engine_strict"}
 
 
 def _topo_deps(repo, p) -> list:
@@ -356,7 +396,6 @@ def node_build_plan(a, c, plan: dict) -> None:
     p = c.project
     props = p.properties or {}
     root = a.repo.root
-    line = node_line(props)
     lock = props.get("Lockfile") or ""
     pm = props.get("PackageManager") or "npm"
     if pm not in ("npm", "pnpm", "yarn"):
@@ -388,7 +427,19 @@ def node_build_plan(a, c, plan: dict) -> None:
             add_reason(plan, "node-pnpm-version", f"The lockfile was written by pnpm {major} (lockfileVersion "
                        f"{m.group(1)}) and package.json names no packageManager; the build uses pnpm {major}, as "
                        "newer pnpm cannot read it.", ["https://pnpm.io/npmrc#lockfile-version"])
-    plan.update({"node": line, "pm": pm, "yarn_berry": berry, "pm_pin": pm_pin, "lockfile": bool(lock), "uid": _images()["node"]["app_uid"],
+    plan["node_props"] = {k: props[k] for k in ("NodeEngine", "NodeEngineMax") if props.get(k)}
+    apply_node_engine(plan, props)
+    line = plan["node"]
+    if plan.get("ignore_engines"):
+        add_reason(plan, "node-engine-not-enforced", f"package.json engines.node ({props.get('NodeEngine')}) allows no "
+                   f"Node.js line there is an image for; the image uses Node.js {line} and the install does not "
+                   "enforce the declaration.", ["https://docs.npmjs.com/cli/configuring-npm/package-json#engines"])
+    elif line not in [int(x) for x in _images()["node"].get("server_lines", [22, 24])]:
+        add_reason(plan, "node-out-of-support-line", f"package.json engines.node ({props.get('NodeEngine')}) allows "
+                   f"only out-of-support Node.js lines; the image uses Node.js {line}, the line the application was "
+                   "written for, which gets no fixes any more. Moving to a supported line is a separate upgrade, not "
+                   "part of containerizing it.", ["https://nodejs.org/en/about/previous-releases"])
+    plan.update({"pm": pm, "yarn_berry": berry, "pm_pin": pm_pin, "lockfile": bool(lock), "uid": _images()["node"]["app_uid"],
                  "build_root": _rel(install, root), "module": _rel(p.dir, install), "base": "distroless",
                  "workspace": install != p.dir.resolve() or bool(props.get("Workspaces"))})
     if not lock:
@@ -527,11 +578,10 @@ BUILD_MARK = "/tmp/.containerizer-build-start"
 def node_build_stage(plan: dict, mark: bool = False) -> list[str]:
     """FROM ... AS build: the toolchain, the dependencies from the lockfile and the build scripts. With `mark`, a
     file touched just before the build scripts run: what they write is newer than it (find -newer)."""
-    im = _images()["node"]
     line, root = plan["node"], plan.get("build_root") or ""
     native = plan.get("native_build")
     lines = [*(["# native addons compile at install time: the full image has Python, make and g++"] if native else []),
-             f"FROM {im[f'server_build_native_{line}' if native else f'server_build_{line}']} AS build"]
+             f"FROM {node_image('build_native' if native else 'build', line)} AS build"]
     lines += ["WORKDIR /src", f"COPY {root + '/' if root else '.'} ."]
     for fn in plan["remove_files"]:
         lines.append(f"RUN find . -name '{fn}' -not -path '*/node_modules/*' -delete")
@@ -566,7 +616,7 @@ def dockerfile_node(plan: dict) -> str:
         lines.append("RUN mkdir -p " + " ".join("/writable" + w for w in writable))
     workdir = "/app" + (f"/{mod}" if mod else "")
     slim = plan.get("base") == "slim"
-    lines += ["", f"FROM {im[f'server_slim_{line}' if slim else f'server_runtime_{line}']} AS final"]
+    lines += ["", f"FROM {node_image('slim' if slim else 'runtime', line)} AS final"]
     lines += [f"WORKDIR {workdir}", "# application files stay owned by root: read-only for the app user",
               "COPY --from=build /src /app"]
     for w in writable:
