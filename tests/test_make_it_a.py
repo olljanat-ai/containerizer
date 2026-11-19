@@ -99,6 +99,8 @@ def builds(monkeypatch):
     monkeypatch.setattr(vf, "_run", lambda cmd, timeout, cwd=None: (0, ""))
 
     def fake(a, c, rules, timeout=900, work=None, **kw):
+        if a.name.endswith("-base"):        # the unpatched code, built for comparison: it builds and runs
+            return {"status": "ok", "attempts": [{"stage": "run", "status": "ok", "log_tail": ""}], "seconds": 30}
         seen.append({"app": a.name, "component": c.name, "root": Path(a.repo.root),
                      "bank": (Path(a.repo.root) / "src/Shop.Api/Bank.cs").read_text()})
         st = outcomes.pop(0) if len(outcomes) > 1 else outcomes[0]
@@ -111,9 +113,9 @@ def builds(monkeypatch):
 
 # --------------------------------------------------------------------------- the plan
 
-def test_the_plan_takes_every_finding_and_the_state_move(stateful):
+def test_the_plan_takes_what_keeps_it_from_a_and_the_state_move(stateful):
     pl = _pl(stateful)
-    assert pl["goal"] == "rating-a" and pl["include_config"] is True and pl["deploy"] is True
+    assert pl["goal"] == "rating-a" and pl["include_config"] is False and pl["deploy"] is True
     assert (pl["max_calls"], pl["max_passes"], pl["max_repairs"]) == (rf.MAX_CALLS_A, rf.MAX_PASSES_A, rf.MAX_REPAIRS_A)
     assert [(t["file"], [f["rule"] for f in t["findings"]]) for t in pl["tasks"]] == [
         ("src/Shop.Api/Bank.cs", ["cert-store-localmachine-code", "cert-store"]),
@@ -1776,3 +1778,195 @@ def test_an_upgrade_builds_the_patched_copies_of_older_versions_again_once(tmp_p
             pass
     assert vt.upgrade_requests(lambda: Conn(), log=lambda m: None, version="9.9.9") == 2
     assert updates == [("containerizer upgrade to 9.9.9", 9), ("containerizer upgrade to 9.9.9", 4)]
+
+
+# --------------------------------------------------------------------------- only what keeps it from A; the same
+# failure without the patch (from an export of 47 orders of 15 applications: 0.51.25)
+
+def test_make_it_a_sends_only_what_keeps_the_application_from_a():
+    """15 real applications: 234 of 275 files sent had only configuration findings, which rate A as they are
+    (62 of them Integrated Security in appsettings.Local.json, which the prompt says to leave). One application
+    was A by the rules after its one refactor file; the 46 other files broke its build."""
+    from test_refactor import comp, finding
+    api = {**comp("Api", [
+        finding("backslash", "refactor", ["src/Api/Paths.cs:3: dir + \"\\\\\" + name"]),
+        finding("drive", "config", ["src/Api/Paths.cs:9: @\"D:\\Out\""]),                  # the same file: sent with it
+        finding("icu", "config", ["src/Api/Clock.cs:2: new CultureInfo(\"nl-BE\")"]),
+        finding("sql-integrated-security", "config", ["src/Api/appsettings.Local.json:4: Integrated Security=true"]),
+    ]), "tier": "server"}
+    cfg = {**comp("Jobs", [finding("icu", "config", ["src/Jobs/Run.cs:2: new CultureInfo(\"nl-BE\")"])], verdict="config"),
+           "tier": "server"}
+    desk = {**comp("Desk", [finding("gdi", "refactor", ["src/Desk/Draw.cs:1: Graphics"])]), "tier": "client"}
+    idx = {**comp("Idx", [finding("local-files", "config", ["src/Idx/Store.cs:5: File.WriteAllText(path)"]),
+                          finding("icu", "config", ["src/Idx/Clock.cs:2: new CultureInfo(\"nl-BE\")"])], verdict="config"),
+           "tier": "server", "stateless": False, "state_unplaced": True,
+           "state": [{"id": "local-files", "title": "Application data written to its own disk"}]}
+    doc = {"name": "shop", "rating": "B", "components": [api, cfg, desk, idx]}
+    assert [c["name"] for c in rf.rating_a_components(doc)] == ["Api", "Idx"]     # not Jobs (A as it is), not the client
+    pl = rf.build_payload(doc, {"type": "none"}, None, goal="rating-a")
+    assert [(t["file"], [f["rule"] for f in t["findings"]]) for t in pl["tasks"]] == [
+        ("src/Api/Paths.cs", ["backslash", "drive"]), ("src/Idx/Store.cs", ["local-files"])]
+    why = {(x["component"], x["rule"]): x["reason"] for x in pl["skipped"]}
+    assert why[("Api", "icu")] == rf.NOT_NEEDED_FOR_A and why[("Idx", "icu")] == rf.NOT_NEEDED_FOR_A
+    assert "developer-only" in why[("Api", "sql-integrated-security")]              # *.Local.json: not read there
+    assert [(x["component"], x["rule"]) for x in rf.remaining_findings(doc)] == [
+        ("Api", "backslash"), ("Api", "drive"), ("Idx", "local-files")]
+    # a refactoring order with configuration findings still takes them all (not the developer-only file)
+    fix = rf.build_payload(doc, {"type": "none"}, None, include_config=True)
+    assert {t["file"] for t in fix["tasks"]} >= {"src/Api/Clock.cs", "src/Jobs/Run.cs", "src/Idx/Clock.cs"}
+    assert "src/Api/appsettings.Local.json" not in {t["file"] for t in fix["tasks"]}
+
+
+def test_an_application_only_a_developer_file_keeps_from_a_says_so():
+    """Three of 15: Windows authentication found only in launchSettings.json kept them B; the order spent its 40
+    calls on configuration findings and could never reach A. Now it is refused at once, with the reason."""
+    from test_refactor import comp, finding
+    api = {**comp("Api", [
+        finding("windows-auth-iis", "refactor", ["src/Api/Properties/launchSettings.json:5: \"windowsAuthentication\": true"]),
+        finding("icu", "config", ["src/Api/Clock.cs:2: new CultureInfo(\"nl-BE\")"])]), "tier": "server"}
+    with pytest.raises(rf.RefactorError) as ex:
+        rf.build_payload({"name": "edox", "rating": "B", "components": [api]}, {"type": "none"}, None, goal="rating-a")
+    assert "nothing to change" in str(ex.value) and "windows-auth-iis (Api): only in developer-only files" in str(ex.value)
+
+
+def test_the_same_failure_without_the_patch():
+    nu = ("#17 /src/A/A.csproj : error NU3012: Package 'Refit 7.0.0' from source 'https://f/index.json': The author "
+          "primary signature found a chain building issue: Revoked: certificate revoked [/src/A/A.csproj]")
+    cs = "#17 /src/A/Bank.cs(10,16): error CS0103: The name 'X' does not exist [/src/A/A.csproj]"
+    base = rf.failure_of({"component": "A", "status": "build-failed", "log_tail": nu})
+    assert base["errors"] == ["A/A.csproj:NU3012"]
+    assert rf.same_failure(rf.failure_of({"status": "build-failed", "log_tail": nu}), base)
+    assert not rf.same_failure(rf.failure_of({"status": "build-failed", "log_tail": nu + "\n" + cs}), base)   # a new error
+    assert not rf.same_failure(rf.failure_of({"status": "run-failed", "log_tail": nu}), base)                 # another step
+    assert not rf.same_failure(rf.failure_of({"status": "ok"}), base)
+    # a run: the same error lines, whatever the times, ids and the copies' names
+    run = "2026-11-18 19:03:08 fail: Program[0]\nSystem.Exception: KeyVault URI variable is not set\n   at shop-refactor-7 3f9a1c2b4d5e"
+    was = rf.failure_of({"status": "run-failed", "log_tail": run.replace("19:03:08", "20:14:55").replace(
+        "shop-refactor-7", "shop-refactor-7-base").replace("3f9a1c2b4d5e", "aa11bb22cc33")}, ("shop-refactor-7-base", "shop-refactor-7"))
+    now = rf.failure_of({"status": "run-failed", "log_tail": run}, ("shop-refactor-7-base", "shop-refactor-7"))
+    assert rf.same_failure(now, was)
+    other = rf.failure_of({"status": "run-failed", "log_tail": "Unhandled exception. System.FormatException: Could "
+                           "not parse the JSON file. '/app/appsettings.json'"})
+    assert not rf.same_failure(other, was)
+    ver = rf.mark_before([{"component": "A", "status": "build-failed", "log_tail": nu},
+                          {"component": "B", "status": "ok"}], {"A": base})
+    assert ver[0]["before"] == "build-failed" and ver[0]["same_before"] is True and "same_before" not in ver[1]
+    assert rf._broken(ver) == [] and rf.verification_status(True, 1, ver) == "verified"
+    assert rf.verification_status(True, 1, ver[:1]) == "applies-only"           # nothing of it builds and runs
+    assert "[the same without the patch]" in rf.bad_text(ver)
+    assert rf.failure_signature({"verification": ver}) == ""                    # nothing the chain could be stuck on
+
+
+def _two_components(tmp_path):
+    """The stateful shop with a second server component, Jobs, that the patch also changes."""
+    root = tmp_path / "shop2"
+    for name in ("Shop.Api", "Shop.Jobs"):
+        (root / "src" / name).mkdir(parents=True)
+        (root / "src" / name / f"{name}.csproj").write_text(CSPROJ)
+        (root / "src" / name / "Program.cs").write_text(
+            'var b = WebApplication.CreateBuilder(args);\nvar app = b.Build();\napp.MapGet("/", () => "ok");\napp.Run();\n')
+        (root / "src" / name / "Bank.cs").write_text(BANK)
+    _git(root, "init", "--quiet")
+    _git(root, "add", "-A")
+    _git(root, "commit", "--quiet", "-m", "initial")
+    return root
+
+
+def test_a_component_that_fails_without_the_patch_too_is_not_repaired(tmp_path, monkeypatch):
+    """28 components of one application failed their NuGet restore on a revoked signature, with and without the
+    patch: every order of its chain asked the LLM about every file of the patch, and none could be verified."""
+    root = _two_components(tmp_path)
+    monkeypatch.setattr(vf, "_run", lambda cmd, timeout, cwd=None: (0, ""))
+    built = []
+    nu = ("#17 /src/src/Shop.Jobs/Shop.Jobs.csproj : error NU3012: Package 'Refit 7.0.0' from source 'x': The author "
+          "primary signature found a chain building issue: Revoked: certificate revoked [/src/src/Shop.Jobs/Shop.Jobs.csproj]")
+
+    def fake(a, c, rules, timeout=900, work=None, **kw):
+        built.append((a.name, c.name))
+        st = "build-failed" if c.name == "Shop.Jobs" else "ok"
+        return {"status": st, "attempts": [{"stage": "build", "status": st, "log_tail": nu if st != "ok" else ""}], "seconds": 3}
+    monkeypatch.setattr(vf, "verify_component", fake)
+    answers = {f"src/{n}/Bank.cs": edit(f"src/{n}/Bank.cs", SEARCH, REPLACE, ["cert-store-localmachine-code", "cert-store"])
+               for n in ("Shop.Api", "Shop.Jobs")}
+    ask = Asker(answers)
+    progress = []
+    res = rf.run_order(_pl(root), tmp_path / "w", ask=ask, progress=progress.append, name="shop-refactor-21")
+    # no repair round (and the second Bank.cs is the same code as the first: its answer is reused)
+    assert res["calls"] <= 2 and not [p for p in ask.prompts if "An earlier change" in p]
+    assert [x["kind"] for x in res["loop"]] == ["generate"]
+    # the unpatched code is built once, only for the component that fails, under a name of its own
+    assert built == [("shop-refactor-21", "Shop.Api"), ("shop-refactor-21", "Shop.Jobs"), ("shop-refactor-21-base", "Shop.Jobs")]
+    assert any("1 failing component(s) without the patch" in p for p in progress)
+    jobs = next(v for v in res["verification"] if v["component"] == "Shop.Jobs")
+    assert (jobs["status"], jobs["before"], jobs["same_before"]) == ("build-failed", "build-failed", True)
+    assert res["loop"][0]["verification"][1] == {"component": "Shop.Jobs", "status": "build-failed", "same_before": True}
+    # the patch did what it is for and broke nothing: verified, A
+    assert res["status"] == "verified" and res["rating_after"] == "A" and res["rating_reached"]
+    assert any("fail the same way without the patch (Shop.Jobs)" in n for n in res["notes"])
+    assert res["baseline"]["Shop.Jobs"]["errors"] == ["src/Shop.Jobs/Shop.Jobs.csproj:NU3012"]
+    assert not (tmp_path / "w" / "shop-refactor-21-base").exists()
+    # the order page says whose failure it is
+    html = admin_refactor._verification(res, "verified")
+    assert "the same without the patch" in html and "st-off" in html
+    # an order that continues this one does not build the unpatched code again
+    built.clear()
+    nxt = {**_pl(root), "base_patch": res["patch"], "baseline": res["baseline"], "heavy_round": 2}
+    res2 = rf.run_order(nxt, tmp_path / "w2", ask=Asker({}), name="shop-refactor-22")
+    assert all(not n.endswith("-base") for n, _ in built) and res2["status"] == "verified" and res2["calls"] == 0
+
+
+def test_a_chain_stops_when_only_the_unpatched_failures_are_left(stateful, tmp_path):
+    ends = datetime.now(timezone.utc) + timedelta(hours=2)
+    q = Q()
+    ver = [{"component": "Shop.Api", "status": "build-failed", "before": "build-failed", "same_before": True}]
+    res = {"patch": "P", "status": "applies-only", "rating_after": "A", "verification": ver,
+           "baseline": {"Shop.Api": {"status": "build-failed", "errors": ["a:NU3012"], "text": ""}}}
+    out = rf.heavy_next({"JobId": 41}, {**_pl(stateful), "heavy_round": 2}, res, ends, tmp_path, queue=q)
+    assert "fails the same way without the patch" in out["stopped"] and not q.jobs
+    # still B: the next order goes on with the findings left, and carries the unpatched builds
+    out = rf.heavy_next({"JobId": 41}, {**_pl(stateful), "heavy_round": 2}, {**res, "rating_after": "B"}, ends, tmp_path, queue=q)
+    assert out["next_job"] and q.jobs[0]["Payload"]["baseline"] == res["baseline"]
+
+
+def test_a_repair_round_asks_about_the_broken_component_only(tmp_path):
+    """One order: 28 files of the patch, each asked about "KeyVault URI variable is not set" of another component."""
+    app = tmp_path / "app"
+    files = [f"src/Api/F{i}.cs" for i in range(5)] + ["src/Api/appsettings.json", "src/Jobs/Run.cs", "src/Jobs/Other.cs"]
+    for f in files:
+        (app / f).parent.mkdir(parents=True, exist_ok=True)
+        (app / f).write_text("x\n")
+    comps = [{"name": "Api", "project": "src/Api/Api.csproj"}, {"name": "Jobs", "project": "src/Jobs/Jobs.csproj"}]
+    broken = [{"component": "Api", "status": "run-failed", "log_tail": "System.Exception: KeyVault URI variable is not set"},
+              {"component": "Jobs", "status": "build-failed",
+               "log_tail": "#9 /src/src/Jobs/Run.cs(3,1): error CS0103: The name 'Y' does not exist [/src/src/Jobs/Jobs.csproj]"}]
+    tasks = rf.repair_plan({"components": comps}, comps, app, broken, files)
+    assert [t["file"] for t in tasks] == ["src/Api/F0.cs", "src/Api/F1.cs", "src/Api/F2.cs", "src/Jobs/Run.cs"]
+    assert "KeyVault" in tasks[0]["findings"][0]["title"] and "CS0103" not in tasks[0]["findings"][0]["title"]
+    assert "CS0103" in tasks[3]["findings"][0]["title"] and "KeyVault" not in tasks[3]["findings"][0]["title"]
+    assert "change nothing" in rf.REPAIR_GUIDANCE and "NuGet.Config" in rf.REPAIR_GUIDANCE
+
+
+def test_a_component_the_patch_makes_no_component_is_not_an_a(stateful, tmp_path, monkeypatch):
+    """A repair round rewrote a project file until the component was no longer one: the copy then rated A."""
+    monkeypatch.setattr(vf, "_run", lambda cmd, timeout, cwd=None: (0, ""))
+    pl = _pl(stateful)
+    out = rf.verify_components({**pl, "components": [{**pl["components"][0], "project": "src/Gone/Gone.csproj"}]},
+                               stateful, tmp_path / "v")
+    assert out[0]["status"] == "not-built" and out[0]["lost"] is True and "no longer one" in out[0]["detail"]
+    assert rf.verification_status(True, 1, out + [{"component": "X", "status": "ok"}]) == "applies-only"
+    assert rf.failure_signature({"verification": out}) == "Shop.Api=lost"
+
+
+def test_answers_the_llm_got_almost_right(stateful):
+    # a new file with its line breaks escaped twice (NuGet.Config: "Data at the root level is invalid")
+    xml = '<?xml version=\\"1.0\\" encoding=\\"utf-8\\"?>\\n<configuration>\\n  <packageSources />\\n</configuration>\\n'
+    ans = {**NOTHING, "new_files": [{"file": "src/Shop.Api/nuget.config", "content": xml}]}
+    changes, errors = rf.apply_answer(stateful, ans, ["src/Shop.Api/Bank.cs"], "src/Shop.Api/Shop.Api.csproj")
+    assert not errors and (stateful / "src/Shop.Api/nuget.config").read_text().splitlines()[:2] == [
+        '<?xml version="1.0" encoding="utf-8"?>', "<configuration>"]
+    # an edit of the project file for a package: told to use package_changes
+    ans = edit("src/Shop.Api/Shop.Api.csproj", "x", "y")
+    _, errors = rf.apply_answer(stateful, ans, ["src/Shop.Api/Bank.cs"], "src/Shop.Api/Shop.Api.csproj")
+    assert "use package_changes" in errors[0]
+    _, errors = rf.apply_answer(stateful, edit("Dockerfile", "x", "y"), ["src/Shop.Api/Bank.cs"], None)
+    assert "say so in not_fixed" in errors[0]
