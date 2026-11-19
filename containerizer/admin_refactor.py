@@ -78,7 +78,9 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
     if not (a.admin or a.operator or a.owner):      # product owners: their products' applications only
         return Response(403, adm._shell(s, a, "Not allowed", "", "<p>Your role does not include this page.</p>"))
     if len(parts) == 1 and method == "GET":
-        return show_list(adm, conn, s, a, bulk_notice(q) or flash)
+        raw = (q.get("app") or [""])[0]
+        return show_list(adm, conn, s, a, bulk_notice(q) or flash,
+                         app_id=int(raw) if re.fullmatch(r"\d{1,9}", raw or "") else None)
     if len(parts) == 2 and parts[1] == "new" and method == "POST":
         return order(adm, conn, s, a, form)
     if len(parts) == 2 and parts[1] == "make-all-a":
@@ -309,10 +311,23 @@ def safe_url(u) -> str | None:
     return u if isinstance(u, str) and URL_RE.fullmatch(u) else None
 
 
-def show_list(adm, conn, s, a, flash: str) -> Response:
+def show_list(adm, conn, s, a, flash: str, app_id: int | None = None) -> Response:
+    """The orders, newest first; with `app_id` (?app=<id>, the link on the application's results page) only that
+    application's."""
+    only = ""
+    if app_id is not None:
+        if not allowed_app(a, conn, app_id):
+            return _nf()
+        named = _rows(conn, "SELECT ApplicationName FROM cz.Application WHERE ApplicationId = %s", (app_id,))
+        if not named:
+            return _nf()
+        only = (f"<p>Orders of <a href='/app/{app_id}'><b>{e(named[0]['ApplicationName'])}</b></a> only. "
+                f"<a href='{BASE}'>Show every application's</a></p>")
     rows = _rows(conn, f"SELECT TOP (200) {COLS}, JSON_VALUE(Result, '$.status') AS PatchStatus, "
                        "JSON_VALUE(Payload, '$.goal') AS Goal, JSON_VALUE(Result, '$.sandbox.status') AS SandboxStatus "
-                       "FROM cz.LlmJob WHERE Kind = N'refactor' ORDER BY JobId DESC")
+                       "FROM cz.LlmJob WHERE Kind = N'refactor'"
+                       + (" AND ApplicationId = %s" if app_id is not None else "") + " ORDER BY JobId DESC",
+                 (app_id,) if app_id is not None else ())
     if not (a.admin or a.operator):
         rows = [r for r in rows if allowed_app(a, conn, r.get("ApplicationId"))]
     out = []
@@ -332,7 +347,7 @@ def show_list(adm, conn, s, a, flash: str) -> Response:
     bulk = (f"<p><a class='button' href='{BASE}/make-all-a'>Make it A: every B application…</a> <span class='muted small'>"
             f"Every B-rated application with its estimate, smallest first; queue the ones under a number of tokens, "
             f"approved.</span></p>" if a.admin else "")
-    body = (bulk + "<p class='muted'>Refactoring patches for B-rated applications: the LLM changes the code for the findings "
+    body = (bulk + only + "<p class='muted'>Refactoring patches for B-rated applications: the LLM changes the code for the findings "
             "that need targeted code changes, and the patch is applied, checked with the rules and built and run "
             "before it is offered. Order one on the application's results page (<b>Refactoring</b>). Orders wait in "
             "the <a href='/admin/llm-queue?kind=refactor'>LLM queue</a>.</p>"

@@ -1176,7 +1176,7 @@ def admin_links(admin, conn, s, app: dict) -> list[tuple[str, str]]:
     if devdb_enabled(admin, a):
         out.append(("Dev databases", f"/admin/dev-databases/{app_id}"))
     if a.admin or a.operator:
-        out.append(("Refactoring orders", "/admin/refactoring"))
+        out.append(("Refactoring orders", f"/admin/refactoring?app={app_id}"))
     return out
 
 
