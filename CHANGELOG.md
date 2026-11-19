@@ -10,6 +10,9 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## 0.51.23 (2026-11-19)
 
+- **Inventory → External services** names the protocol of well-known ports (443 HTTPS, 1433 SQL Server, 5672 AMQP,
+  6379 Redis, ...) in the **Port** drop-down and column.
+
 - **Admin → Developers** has a **With a business unit** filter: the developers already mapped to a business unit.
 
 ## 0.51.22 (2026-11-19)

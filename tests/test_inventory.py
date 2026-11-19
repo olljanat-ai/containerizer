@@ -258,7 +258,8 @@ def test_external_services_are_combined_with_the_applications_that_use_them():
     table = body[body.index("<table>"):]
     assert table.count("<code>api.payments.example.com</code>") == 2 and table.count("<tr>") == 4
     assert "href='/app/7' title='Billing.Api (appsettings.json:3); Billing.Worker (appsettings.json:5)'>billing</a>" in table
-    assert "<option value='443' selected>443 (1)</option>" in body and "<option value='none'>No port (1)</option>" in body
+    assert "<option value='443' selected>443 HTTPS (1)</option>" in body and "8443 HTTPS (alt) (1)" in body
+    assert "<td class='nowrap'>443 <span class='muted small'>HTTPS</span></td>" in table and "<option value='none'>No port (1)</option>" in body
     assert "name='host' value='payments'" in body
     assert inventory.parse_filters({"port": ["443; drop"], "host": [" 10.1 .2 "]}) == {"port": "", "host": "10.1.2"}
     assert inventory.keep_query({"kind": ["service"], "port": ["443"], "host": ["10.1"]}) == "kind=service&port=443&host=10.1"
