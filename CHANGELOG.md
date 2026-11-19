@@ -17,6 +17,10 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   `>>> dotnet restore ...`) and `ERROR: failed to solve`, without the compiler's or NuGet's error. Now it shows
   the build's lines that name an error (each once), then the end of what the build itself printed. The LLM that
   is asked about an unexplained failure (`--ai`) gets the same text.
+- **A build that cannot look up a name says so.** Instead of "no known cause (no rule matched the log)" the reason
+  names the hosts whose lookups failed and points at Admin → Firewall (also for `getaddrinfo EAI_AGAIN <host>`,
+  which npm's native add-on installs print: `release-assets.githubusercontent.com` for a prebuilt binary,
+  `nodejs.org` for node-gyp's headers), or the package feed that refused the sign-in.
 
 ## 0.51.29 (2026-11-19)
 

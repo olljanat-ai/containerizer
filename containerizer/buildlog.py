@@ -18,7 +18,7 @@ HOST_RES = [re.compile(p, re.I) for p in (
     r"[a-z][a-z0-9+.-]*://(?:[^@/\s]*@)?" + HOST,            # https://dl-cdn.alpinelinux.org/alpine/...
     r"Could not resolve host:?\s*'?" + HOST,                 # curl, git, pip
     r"\blookup\s+" + HOST,                                   # Go: lookup proxy.golang.org on 10.0.0.1:53
-    r"\bENOTFOUND\s+" + HOST,                                # npm: getaddrinfo ENOTFOUND registry.npmjs.org
+    r"\b(?:ENOTFOUND|EAI_AGAIN)\s+" + HOST,                  # npm: getaddrinfo ENOTFOUND registry.npmjs.org
     r"\bresolve\s+(?:host\s+)?'?" + HOST,                    # Failed to resolve 'pypi.org'
     r"\bfor\s+" + HOST + r"(?=[:'\"\s]|$)")]                 # Temporary failure resolving / unknown host for x
 
@@ -103,13 +103,22 @@ def refused_feeds(log: str) -> list[str] | None:
 def failure_text(log: str, limit: int = 600) -> str:
     """Why a build failed, for a result's reason: the error lines, a pointer to the firewall for the names whose
     lookups failed, and to the package feeds when a feed refused the sign-in."""
+    hint = "".join(" · " + h for h in hints(log))
+    return error_lines(log, max(200, limit - len(hint))) + hint
+
+
+def hints(log: str) -> list[str]:
+    """What a failed build's log says about its surroundings rather than the code: the names whose lookups failed
+    (the firewall), a package feed that refused the sign-in."""
+    out = []
     hosts = unresolved_hosts(log)
-    hint = (f" · name lookup failed for {', '.join(hosts)}: allow {'it' if len(hosts) == 1 else 'them'} on "
-            f"Admin → Firewall if the build needs {'it' if len(hosts) == 1 else 'them'}") if hosts else ""
+    if hosts:
+        out.append(f"name lookup failed for {', '.join(hosts)}: allow {'it' if len(hosts) == 1 else 'them'} on "
+                   f"Admin → Firewall if the build needs {'it' if len(hosts) == 1 else 'them'}")
     feeds = refused_feeds(log)
     if feeds is not None:
         at = f" ({', '.join(feeds)})" if feeds else ""
-        hint += (f" · a package feed{at} refused the build's sign-in: register the feed's URL (the host the "
-                 f"project's .npmrc, nuget.config or pom.xml names) and a read token on Admin → Source control → "
-                 f"Package feeds (it replaces a token the repository has)")
-    return error_lines(log, max(200, limit - len(hint))) + hint
+        out.append(f"a package feed{at} refused the build's sign-in: register the feed's URL (the host the "
+                   f"project's .npmrc, nuget.config or pom.xml names) and a read token on Admin → Source control → "
+                   f"Package feeds (it replaces a token the repository has)")
+    return out

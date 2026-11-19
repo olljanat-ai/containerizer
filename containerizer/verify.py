@@ -587,8 +587,10 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
             env_override = {"ASPNETCORE_ENVIRONMENT": "Development", "DOTNET_ENVIRONMENT": "Development"}
             continue
         if d is None:
+            from .buildlog import hints
+            why = hints(msgs[-200000:]) if stage == "build" else []     # the firewall, a package feed: not the code
             history.append({"attempt": attempt, "stage": stage, "status": "unexplained", **details,
-                            "log_tail": tail[-1500:]})
+                            **({"note": "; ".join(why)} if why else {}), "log_tail": tail[-1500:]})
             result["status"] = f"{stage}-failed"
             break
         fr, caps = d
