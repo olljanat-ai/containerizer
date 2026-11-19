@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.31 (2026-11-19)
+
+- **Tags for products and business units.** Their pages under Admin → Products and Admin → Business units have a
+  **Tags** field (comma-separated, the same rules as an application's tags), and the two lists show the tags in
+  use as chips above the table and filter by the one picked. The change history records them (schema 62).
+  Applications keep their tags on the results page, which the front page filters by.
+
 ## 0.51.30 (2026-11-19)
 
 - **Refactoring orders** on an application's results page opens that application's orders only

@@ -130,7 +130,7 @@ def test_roles_end_to_end(idp, tmp_path):  # noqa: F811
         s, _, page = op.follow(f"/app/{tag_app}")
         assert "action='/admin/tags/" in page
         # the results page links to the admin pages operators may open, not to the application's settings
-        assert "class='adminlinks small'" in page and "href='/admin/refactoring'>Refactoring orders</a>" in page
+        assert "class='adminlinks small'" in page and f"href='/admin/refactoring?app={tag_app}'>Refactoring orders</a>" in page
         assert f"href='/admin/applications/{tag_app}'" not in page
         assert op.go(f"/admin/tags/{tag_app}", {"Tags": "pci"})[0] == 403                     # no CSRF token
         s, _, page = op.follow(f"/admin/tags/{tag_app}", {"csrf": op.csrf(page), "Tags": "PCI, wave 1, pci"})

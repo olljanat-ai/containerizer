@@ -364,6 +364,24 @@ def test_admin_maps_and_audits(idp, tmp_path):
                                                       "Description": ""})
         assert s == 200 and "Saved." in body
         pid = re.search(r"<option value='(\d+)'>Web shop", b.follow("/admin/applications?show=all")[2])[1]
+        # tags of products and business units (schema 62): set on their pages, the lists filter by them
+        tagged = {"csrf": csrf, "Name": "Web shop", "BusinessUnitId": bu, "InfoUrl": "https://cmdb.example.com/products/42",
+                  "Owner": "Team A", "Description": ""}
+        assert "A tag is 1-40 letters" in b.follow(f"/admin/products/{pid}", {**tagged, "Tags": "ok, <b>"})[2]
+        s, _, body = b.follow(f"/admin/products/{pid}", {**tagged, "Tags": " Wave 1 ,customer-facing, wave 1"})
+        assert "Saved." in body and "value='Wave 1, customer-facing'" in body and "Tags" in body.split("<h2>Changes</h2>")[1]
+        assert b.go("/admin/products/new", {"csrf": csrf, "Name": "Back office", "BusinessUnitId": bu, "InfoUrl": "",
+                                            "Owner": "", "Description": "", "Tags": ""})[0] == 303
+        body = b.follow("/admin/products")[2]
+        assert "Web shop" in body and "Back office" in body and "href='/admin/products?tag=Wave+1'" in body
+        body = b.follow("/admin/products?tag=wave+1")[2]
+        rows = body.split("<tbody>")[1].split("</tbody>")[0]
+        assert "Web shop" in rows and "Back office" not in rows and "aria-current=true" in body
+        assert "None with the tag nope." in b.follow("/admin/products?tag=nope")[2]
+        assert b.go(f"/admin/business-units/{bu}", {"csrf": csrf, "Name": "Retail", "Owner": "", "Description": "",
+                                                    "Tags": "emea"})[0] == 303
+        body = b.follow("/admin/business-units?tag=emea")[2]
+        assert "Retail" in body.split("<tbody>")[1] and "value='emea'" in b.follow(f"/admin/business-units/{bu}")[2]
         app = re.search(r"name='app' value='(\d+)'", b.follow("/admin/applications")[2])[1]
         s, _, body = b.follow("/admin/applications/bulk", {"csrf": csrf, "app": [app], "ProductId": pid})
         assert "1 application(s) updated." in body

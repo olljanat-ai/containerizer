@@ -1994,3 +1994,25 @@ def test_the_orders_list_of_one_application(adm):
     assert "Orders of <a href='/app/7'><b>shop</b></a> only" in b and "href='/admin/refactoring'>Show every application's</a>" in b
     assert _getq(adm, ad, "/admin/refactoring", "app=8").status == 404           # no such application
     assert "bank: Make it A" in _getq(adm, ad, "/admin/refactoring", "app=x%27").body     # not a number: the whole list
+
+
+def test_products_and_business_units_filter_by_their_tags(adm):
+    """Tags of products and business units: chips above the admin lists, which filter by them."""
+    prods = [{"Id": 1, "Name": "Web shop", "Owner": None, "InfoUrl": None, "Tags": "Wave 1,pci", "Parent": "Retail", "N": 2},
+             {"Id": 2, "Name": "Back office", "Owner": None, "InfoUrl": None, "Tags": None, "Parent": "Retail", "N": 0},
+             {"Id": 3, "Name": "Ledger", "Owner": None, "InfoUrl": None, "Tags": "wave 1", "Parent": None, "N": 1}]
+    adm.conn.answers = {r"FROM cz.Product p LEFT JOIN cz.BusinessUnit b": prods,
+                        r"FROM cz.BusinessUnit b ORDER BY": [{"Id": 5, "Name": "Retail", "Owner": None, "InfoUrl": None,
+                                                              "Tags": "emea", "Parent": None, "N": 2}]}
+    ad = adm.sessions.create("a@example.com", "A", True)
+    b = _get(adm, ad, "/admin/products").body
+    assert ">Wave 1 <span class='muted'>2</span></a>" in b and ">pci <span class='muted'>1</span></a>" in b
+    assert all(n in b for n in ("Web shop", "Back office", "Ledger")) and "name='Tags'" in b      # the Add form
+    b = _getq(adm, ad, "/admin/products", "tag=WAVE+1").body
+    rows = b.split("<tbody>")[1].split("</tbody>")[0]
+    assert "Web shop" in rows and "Ledger" in rows and "Back office" not in rows
+    assert "class='chip tagchip on' href='/admin/products' aria-current=true>Wave 1" in b
+    assert "None with the tag gone." in _getq(adm, ad, "/admin/products", "tag=gone").body
+    assert "Back office" in _getq(adm, ad, "/admin/products", "tag=%3Cscript%3E").body      # not a tag: no filter
+    b = _getq(adm, ad, "/admin/business-units", "tag=emea").body
+    assert "Retail" in b.split("<tbody>")[1] and "href='/admin/business-units?tag=emea'" in b

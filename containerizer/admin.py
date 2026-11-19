@@ -366,7 +366,7 @@ class Admin:
                 return self.save_named(conn, a, table, ident, form)
             if ident is not None:
                 return self.edit_named(conn, s, a, table, ident, flash)
-            return self.list_named(conn, s, a, table, flash)
+            return self.list_named(conn, s, a, table, flash, q.get("tag", [""])[0])
         if kind == "audit" and method == "GET":
             return self.audit(conn, s, a, q)
         if kind == "access" and method == "GET":
@@ -968,29 +968,57 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
 
     # -- products and business units ------------------------------------------------------------
 
-    def list_named(self, conn, s: Session, a: Access, table: str, flash: str) -> Response:
+    def list_named(self, conn, s: Session, a: Access, table: str, flash: str, tag: str = "") -> Response:
+        """The products or the business units; with `tag` (?tag=, the chips above the table) the ones that have
+        that tag (tags.py: set on each one's own page)."""
+        from .tags import TAG_RE, has_tag, split_tags
+        tag = " ".join((tag or "").split())
+        tag = tag if TAG_RE.fullmatch(tag) else ""
         cur = conn.cursor(as_dict=True)
         if table == "Product":
-            cur.execute("SELECT p.ProductId AS Id, p.Name, p.Owner, p.InfoUrl, b.Name AS Parent, "
+            cur.execute("SELECT p.ProductId AS Id, p.Name, p.Owner, p.InfoUrl, p.Tags, b.Name AS Parent, "
                         "(SELECT COUNT(*) FROM cz.Application a WHERE a.ProductId = p.ProductId AND a.Retired = 0) AS N "
                         "FROM cz.Product p LEFT JOIN cz.BusinessUnit b ON b.BusinessUnitId = p.BusinessUnitId ORDER BY p.Name")
             cols, kind, title = "<th>Product</th><th>Business unit</th><th>Owner</th><th class='num'>Applications</th>", "products", "Products"
         else:
-            cur.execute("SELECT b.BusinessUnitId AS Id, b.Name, b.Owner, NULL AS InfoUrl, NULL AS Parent, "
+            cur.execute("SELECT b.BusinessUnitId AS Id, b.Name, b.Owner, NULL AS InfoUrl, b.Tags, NULL AS Parent, "
                         "(SELECT COUNT(*) FROM cz.Product p WHERE p.BusinessUnitId = b.BusinessUnitId) AS N "
                         "FROM cz.BusinessUnit b ORDER BY b.Name")
             cols, kind, title = "<th>Business unit</th><th>Owner</th><th class='num'>Products</th>", "business-units", "Business units"
         view_only = " <span class='muted small'>(view only)</span>"
         mine = (lambda r: True) if a.admin or table != "Product" else (lambda r: r["Id"] in a.products)
+        every = cur.fetchall()
+        used: dict = {}                              # tag (case folded) -> [as first written, how many have it]
+        for r in every:
+            for t in split_tags(r.get("Tags")):
+                used.setdefault(t.casefold(), [t, 0])[1] += 1
+        if tag and tag.casefold() not in used:
+            used[tag.casefold()] = [tag, 0]          # the one filtered by stays, even with none left
+        chips = ""
+        if used:
+            def href(t):
+                return f"/admin/{kind}" + ("?" + urlencode({"tag": t}) if t else "")
+            chips = ("<nav class='chips tags' aria-label='Tags'><span class='muted small'>Tags</span>"
+                     f"<a class='chip tagchip{'' if tag else ' on'}' href='{href('')}'>Any</a>"
+                     + "".join(f"<a class='chip tagchip{' on' if tag.casefold() == k else ''}' "
+                               f"href='{e(href('' if tag.casefold() == k else t))}'"
+                               f"{' aria-current=true' if tag.casefold() == k else ''}>{e(t)} "
+                               f"<span class='muted'>{n}</span></a>" for k, (t, n) in sorted(used.items())) + "</nav>")
+        shown = [r for r in every if not tag or has_tag(r.get("Tags"), tag)]
+
+        def tags_of(r):
+            return "".join(f" <a class='tag' href='/admin/{kind}?{e(urlencode({'tag': t}))}'>{e(t)}</a>"
+                           for t in split_tags(r.get("Tags")))
         rows = "".join(
             f"<tr><td><a href='/admin/{kind}/{int(r['Id'])}'>{e(r['Name'])}</a>{info_link(r['InfoUrl'])}"
-            f"{'' if mine(r) else view_only}</td>"
+            f"{'' if mine(r) else view_only}{tags_of(r)}</td>"
             + (f"<td>{e(r['Parent'] or '-')}</td>" if table == "Product" else "")
-            + f"<td>{e(r['Owner'] or '-')}</td><td class='num'>{int(r['N'])}</td></tr>" for r in cur.fetchall())
+            + f"<td>{e(r['Owner'] or '-')}</td><td class='num'>{int(r['N'])}</td></tr>" for r in shown)
         span = 4 if table == "Product" else 3
         add = (f"<h2>Add</h2>{self._named_form(conn, s, a, table, None, {})}"
                if a.admin or (table == "Product" and a.bus) else "")
-        body = (f"<table><thead><tr>{cols}</tr></thead><tbody>{rows or f'<tr><td colspan={span} class=muted>None yet.</td></tr>'}"
+        none = f"None with the tag {e(tag)}." if tag and every else "None yet."
+        body = (f"{chips}<table><thead><tr>{cols}</tr></thead><tbody>{rows or f'<tr><td colspan={span} class=muted>{none}</td></tr>'}"
                 f"</tbody></table>{add}")
         return Response(200, self._shell(s, a, title, kind, body, flash))
 
@@ -1023,6 +1051,7 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
 <label for='Name'>Name</label><input id='Name' name='Name' required maxlength='200' value='{e(r.get('Name') or '')}'>
 {parent}{info}<label for='Owner'>Owner</label><input id='Owner' name='Owner' maxlength='200' value='{e(r.get('Owner') or '')}'>
 <label for='Description'>Description</label><textarea id='Description' name='Description' maxlength='1000' rows='2'>{e(r.get('Description') or '')}</textarea>
+<label for='Tags'>Tags <span class='muted'>(separated by commas; the list of {'products' if table == 'Product' else 'business units'} filters by them)</span></label><input id='Tags' name='Tags' maxlength='900' value='{e(', '.join(r.get('Tags').split(',')) if r.get('Tags') else '')}' placeholder='e.g. wave 1, customer-facing'>
 <div><button>{'Save' if ident else 'Add'}</button></div></form>"""
 
     def edit_named(self, conn, s: Session, a: Access, table: str, ident: int, flash: str) -> Response:
@@ -1059,7 +1088,8 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                        f"<dl class='facts'><dt>Owner</dt><dd>{e(r.get('Owner') or '-')}</dd><dt>Product page</dt>"
                        f"<dd>{info_link(r.get('InfoUrl')) or '-'}</dd>"
                        + (f"<dt>External ID</dt><dd><code>{e(r['ExternalId'])}</code></dd>" if r.get("ExternalId") else "")
-                       + f"<dt>Description</dt><dd>{e(r.get('Description') or '-')}</dd></dl>")
+                       + f"<dt>Description</dt><dd>{e(r.get('Description') or '-')}</dd>"
+                       + f"<dt>Tags</dt><dd>{e(', '.join((r.get('Tags') or '').split(',')) or '-')}</dd></dl>")
         body = (f"{details}<h2>{what}</h2><p>{members or '<span class=muted>None</span>'}</p>"
                 f"{delete}<h2>Changes</h2>{self._history(conn, table, ident)}")
         return Response(200, self._shell(s, a, r["Name"], kind, body, flash))
@@ -1084,10 +1114,20 @@ last scanned {_d(r['LastSeenAt'])}. <a href='/app/{app_id}'>View results</a></p>
                 ext = clean_id(raw) if raw else None
                 if raw and not ext:
                     errors.append("The external ID may have letters, digits and . _ : - only, at most 100")
+        tags = None
+        if "Tags" in form:                            # the form of this version (schema 62)
+            from .tags import MAX_TAGS, parse_tags
+            tags, bad = parse_tags(form.get("Tags", [""])[0][:900])
+            if bad:
+                errors.append(f"At most {MAX_TAGS} tags" if bad == "many" else
+                              "A tag is 1-40 letters, digits, spaces and - _ . + / & #, separated by commas")
         if errors:
             return redirect(back + "?" + urlencode({"msg": "; ".join(errors)}))
         cur = conn.cursor()
         cols, vals = ["Name", "Owner", "Description"], [name, owner, desc]
+        if tags is not None:
+            cols.append("Tags")
+            vals.append(",".join(tags) or None)
         bu = None
         if table == "Product":
             bu = self._id(form, "BusinessUnitId")
