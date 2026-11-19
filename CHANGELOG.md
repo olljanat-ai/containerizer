@@ -8,6 +8,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.32 (2026-11-19)
+
+- **Make it A: every B application** estimates with the queue as it is: the page says how many jobs the LLM queue
+  holds already and the time with them, and divides the LLM's time by every LLM's requests at once (as the LLM
+  queue page does), not by the stored "Parallel requests" alone.
+
 ## 0.51.31 (2026-11-19)
 
 - **Tags for products and business units.** Their pages under Admin → Products and Admin → Business units have a

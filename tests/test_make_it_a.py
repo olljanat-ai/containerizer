@@ -1125,6 +1125,14 @@ def test_make_it_a_for_every_b_app_smallest_first(adm, stateful, monkeypatch):
     assert "style=" not in b                                                         # the CSP allows no inline style
     b = _getq(adm, ad, "/admin/refactoring/make-all-a", "limit=99999999").body
     assert "Queue 2 order(s) under 99,999,999 tokens, approved" in b
+    assert "The LLM queue holds" not in b                                            # an empty queue: nothing to add
+    key = r"SELECT JobId, Kind, Model, InputChars, EstInputTokens FROM cz.LlmJob"
+    adm.conn.answers[key] = [{"JobId": 5, "Kind": "review", "Model": None, "InputChars": 40_000,
+                              "EstInputTokens": None}]
+    b = _get(adm, ad, "/admin/refactoring/make-all-a").body                          # what waits already is counted
+    assert "The LLM queue holds <a href='/admin/llm-queue'>1 job(s)</a> already" in b
+    assert "with them, the 1 order(s) under the limit:" in b
+    del adm.conn.answers[key]
     assert _post(adm, ad, "/admin/refactoring/make-all-a", csrf="wrong").status == 403
     assert not adm.conn.sql("EXEC cz.QueueLlmJob")
     r = _post(adm, ad, "/admin/refactoring/make-all-a", Limit="20000")
