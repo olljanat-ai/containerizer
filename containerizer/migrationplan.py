@@ -73,12 +73,24 @@ def rating_of(comps: list[dict], state: dict, fixed: tuple = ()) -> str | None:
                 for c in comps)
 
 
-def ready_now(c: dict, state: dict) -> bool:
+def healthy_ids(app: dict) -> set:
+    """The components the latest sandbox check found deployed and healthy: they build and run, whatever the scan's
+    own verification said (the sandbox may run a Make it A order's patched copy, built again after the scan)."""
+    return {s["ComponentId"] for s in app.get("sandbox") or []
+            if s.get("Status") == "healthy" and s.get("ComponentId") is not None}
+
+
+def verify_failed(c: dict, healthy=()) -> bool:
+    """The scan's build or run of the component failed, and the sandbox does not run it healthy (healthy_ids)."""
+    return c.get("VerifyStatus") in FAILED_VERIFY and c.get("ComponentId") not in healthy
+
+
+def ready_now(c: dict, state: dict, healthy=()) -> bool:
     """Wave 1: a server component that rates A on its own, or would but for the data it keeps (it runs with a
     persistent volume and one replica, no code change), and has not failed to build and run (what an organization
-    scan deploys to the sandbox, org.select_components)."""
+    scan deploys to the sandbox, org.select_components) or runs healthy in the sandbox all the same."""
     from .assess import rating_of as rate
-    return ((c.get("Tier") or "server") == "server" and c.get("VerifyStatus") not in FAILED_VERIFY
+    return ((c.get("Tier") or "server") == "server" and not verify_failed(c, healthy)
             and rate([_stand_in(c, False)]) == "A")
 
 
@@ -175,6 +187,7 @@ def build(app: dict) -> dict:
         by_comp.setdefault(f.get("ComponentId"), []).append(f)
     checks = {s["ComponentId"]: s for s in app.get("sandbox") or [] if s.get("ComponentId") is not None}
     deploys = app.get("deploys")
+    healthy = healthy_ids(app)
     now, after, port, windows = [], [], [], []
     for c in plan:
         v = c.get("Verdict")
@@ -182,7 +195,7 @@ def build(app: dict) -> dict:
             windows.append(c)
         elif v == "rewrite":
             port.append(c)
-        elif ready_now(c, state):
+        elif ready_now(c, state, healthy):
             now.append(c)
         else:
             after.append(c)
@@ -197,7 +210,7 @@ def build(app: dict) -> dict:
         "linux_after": rating_of(linux, state, fix_ids) if after else None,
         "linux_after_port": rating_of(linux, state, fix_ids + port_ids) if port else None,
         "calls": crossings(app, linux, windows),
-        "checks": checks, "deploys": deploys,
+        "checks": checks, "deploys": deploys, "healthy": healthy,
     }
 
 
@@ -316,7 +329,7 @@ def _fixes(c: dict, plan: dict) -> str:
         parts.append("code changes: " + ", ".join(dict.fromkeys(titles)))
     if c["ComponentId"] in plan["state"]:
         parts.append("keeps its own data: " + ", ".join(plan["state"][c["ComponentId"]]))
-    if c.get("VerifyStatus") in FAILED_VERIFY:
+    if verify_failed(c, plan.get("healthy") or ()):
         parts.append({"build-failed": "the build failed", "run-failed": "it did not run"}[c["VerifyStatus"]]
                      + " when Containerizer built and ran it")
     if (c.get("Tier") or "server") != "server":

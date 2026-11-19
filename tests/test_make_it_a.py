@@ -1781,7 +1781,7 @@ def test_an_upgrade_builds_the_patched_copies_of_older_versions_again_once(tmp_p
 
 
 # --------------------------------------------------------------------------- only what keeps it from A; the same
-# failure without the patch (from an export of 47 orders of 15 applications: 0.51.20)
+# failure without the patch (from an export of 47 orders of 15 applications: 0.51.25)
 
 def test_make_it_a_sends_only_what_keeps_the_application_from_a():
     """15 real applications: 234 of 275 files sent had only configuration findings, which rate A as they are

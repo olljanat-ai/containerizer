@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## 0.51.20 (2026-11-19)
+## 0.51.25 (2026-11-19)
 
 From an export of 47 Make it A orders of 15 real applications, none of which reached A:
 
@@ -45,6 +45,38 @@ From an export of 47 Make it A orders of 15 real applications, none of which rea
   unescaped (`NuGet.Config is not valid XML`); an edit of a file that is not shown answers with what to do
   instead (`package_changes` for a project file); a repair that lists the compiler's code as fixed is no longer
   shown as "the LLM did not say this one is fixed".
+## 0.51.24 (2026-11-19)
+
+- **Inventory → External services**: the FQDN or IP address search field is a drop-down: **All**, **FQDN** (services
+  named by a host name) or **IP address**.
+
+## 0.51.23 (2026-11-19)
+
+- **Inventory → External services** names the protocol of well-known ports (443 HTTPS, 1433 SQL Server, 5672 AMQP,
+  6379 Redis, ...) in the **Port** drop-down and column.
+
+- **Admin → Developers** has a **With a business unit** filter: the developers already mapped to a business unit.
+
+## 0.51.22 (2026-11-19)
+
+- **Inventory → External services** lists each service (host and port) once, with how many applications use it and
+  which, instead of a row per application and component. A **port** drop-down (with how many services use each port)
+  and an **FQDN or IP address** filter narrow the list down. The tab counts services, not rows.
+
+## 0.51.21 (2026-11-19)
+
+- **Admin → Developers** pages through the list, 500 a page, with **Previous** and **Next** above and below it
+  (it showed only the first 500 and asked to search for the others).
+- **API**: `GET /api/v1/developers` (`?email=`, `?name=`, `?businessUnitId=`, `?unmapped=true`, `?ignored=true`)
+  and `GET` · `PATCH /api/v1/developers/{id}` to set a developer's `businessUnitId` and `ignored`
+  (administrators and Full API keys), for mapping developers to business units from another source.
+
+## 0.51.20 (2026-11-19)
+
+- **Application page**: a component whose build failed in the scan's verification but which the sandbox runs deployed
+  and healthy (a Make it A order's patched copy, built again after the scan) is no longer reported as failed: no
+  *Not confirmed* note, its *Build and run* cell says it runs in the sandbox, the migration plan puts it in wave 1
+  when it is otherwise ready, and *Try again* no longer lists it as not in the sandbox.
 
 ## 0.51.19 (2026-11-19)
 

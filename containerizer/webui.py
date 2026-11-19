@@ -719,7 +719,9 @@ def _date(d) -> str:
 
 def _confidence_source(app: dict) -> str:
     """Where the confidence comes from: a build and run confirms it only when none of them failed."""
-    failed = sum(1 for c in app.get("components") or [] if c.get("VerifyStatus") in VERIFY_FAILED)
+    from .migrationplan import healthy_ids, verify_failed
+    healthy = healthy_ids(app)
+    failed = sum(1 for c in app.get("components") or [] if verify_failed(c, healthy))
     if failed:
         return f"from source analysis; the build or run failed for {failed} component{'s' if failed != 1 else ''}"
     return "confirmed by building and running" if app.get("Verified") else "from source analysis"
@@ -1008,7 +1010,11 @@ def _info_link(url) -> str:
 def _scan_again(app: dict, ctx: dict | None) -> str:
     """Try again (scanagain.py) for administrators and operators, when the latest scan left a component out."""
     from .scanagain import section
-    excluded = [d for d in app.get("deploys") or [] if d.get("Kind") == "excluded"]
+    from .migrationplan import healthy_ids
+    up = healthy_ids(app)
+    running = {c["ComponentName"] for c in app.get("components") or [] if c.get("ComponentId") in up}
+    # the sandbox may run what the scan left out (a Make it A order's patched copy): only what does not run is listed
+    excluded = [d for d in app.get("deploys") or [] if d.get("Kind") == "excluded" and d.get("ComponentName") not in running]
     return section(app, ctx or {}, excluded)
 
 
@@ -1086,7 +1092,8 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 
     migs = {m["ComponentId"]: m for m in app.get("migrations") or []}
     reviews = {r["ComponentId"]: r for r in app.get("llm_reviews") or []}
-    from .migrationplan import sandbox_state
+    from .migrationplan import healthy_ids, sandbox_state
+    healthy = healthy_ids(app)
     in_sb = {c["ComponentId"]: sandbox_state(c, sandbox, app.get("deploys")) for c in app["components"]}
     sb_col = bool(sandbox) or any(x["state"] in ("checked", "deployed", "excluded") for x in in_sb.values())
     comp_rows = "".join(
@@ -1094,7 +1101,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
         f"<div class='muted small'>{e(c['ProjectPath'])}</div></td>"
         f"<td>{e(ROLE_TEXT.get(c['Role'], c['Role'].title()))}</td>"
         f"<td><span class='sev s-{e(c['Verdict'])}'>{e(VERDICT_LABEL.get(c['Verdict'], c['Verdict']))}</span></td>"
-        f"<td>{_verify(c)}</td>"
+        f"<td>{_verify(c, healthy)}</td>"
         + (f"<td>{_sandbox_cell(in_sb[c['ComponentId']])}</td>" if sb_col else "")
         + f"<td>{_plan_cell(app['ApplicationId'], c, migs.get(c['ComponentId']), refactor)}</td>"
         + "</tr>"
@@ -1110,7 +1117,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                        f"<div class='muted small'>{e(c['VerdictText'])}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
-                       f"{_verify_detail(c)}{_sandbox_detail(sandbox.get(c['ComponentId']), (refactor.get('sandbox_logs') or {}).get(c['ComponentId']))}{items}"
+                       f"{_verify_detail(c, healthy)}{_sandbox_detail(sandbox.get(c['ComponentId']), (refactor.get('sandbox_logs') or {}).get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
@@ -1274,21 +1281,30 @@ VERIFY_TEXT = {"ok": "Runs", "ok-external": "Runs (stops only at missing externa
 VERIFY_FAILED = ("build-failed", "run-failed")
 
 
-def _verify(c: dict) -> str:
+def _verify(c: dict, healthy=()) -> str:
     s = c.get("VerifyStatus")
     if not s:
         return "<span class='muted'>not run</span>"
+    if s in VERIFY_FAILED and c.get("ComponentId") in healthy:     # built again for the sandbox, and it runs there
+        return (f"<span class='v-ok'>Runs</span> <span class='muted small'>in the sandbox; the scan's "
+                f"{'build' if s == 'build-failed' else 'run'} failed</span>"
+                f" <a class='small' href='#c{int(c['ComponentId'])}'>why</a>")
     out = f"<span class='v-{e(s)}'>{e(VERIFY_TEXT.get(s, s))}</span>"
     if s in VERIFY_FAILED and c.get("ComponentId") is not None:
         out += f" <a class='small' href='#c{int(c['ComponentId'])}'>why</a>"
     return out
 
 
-def _verify_detail(c: dict) -> str:
+def _verify_detail(c: dict, healthy=()) -> str:
     """Why a component's build or run failed, with the end of its log (VerifyDetail), in its details."""
     s = c.get("VerifyStatus")
     if s not in VERIFY_FAILED:
         return ""
+    after = ("A component whose build or run failed is left out of the generated files and the sandbox; its rating "
+             "comes from its source code.")
+    if c.get("ComponentId") in healthy:
+        after = ("The sandbox runs it all the same, deployed and healthy: it was built again after the scan (a Make it A "
+                 "order's patched copy, or a later deploy), so this failure no longer holds.")
     detail = (c.get("VerifyDetail") or "").strip()
     if "\n" in detail:
         body = f"<pre class='code'>{e(detail)}</pre>"
@@ -1297,13 +1313,14 @@ def _verify_detail(c: dict) -> str:
                 + "<p class='muted small'>This scan kept no log; the next scan shows the end of it here.</p>")
     return (f"<div class='sandbox'><div><span class='label'>Build and run</span> {_verify(dict(c, ComponentId=None))}"
             " <span class='muted small'>(in the scan's verification, before anything is generated)</span></div>"
-            f"{body}<p class='muted small'>A component whose build or run failed is left out of the generated files "
-            "and the sandbox; its rating comes from its source code.</p></div>")
+            f"{body}<p class='muted small'>{e(after)}</p></div>")
 
 
 def _verify_failed_note(app: dict) -> str:
     """At the top of the page: the rating comes from the source code, but the build or run failed."""
-    bad = [c for c in app.get("components") or [] if c.get("VerifyStatus") in VERIFY_FAILED]
+    from .migrationplan import healthy_ids, verify_failed
+    healthy = healthy_ids(app)
+    bad = [c for c in app.get("components") or [] if verify_failed(c, healthy)]
     if not bad:
         return ""
     names = ", ".join(f"<a href='#c{int(c['ComponentId'])}'>{e(c['ComponentName'])}</a>" for c in bad)
@@ -1572,7 +1589,7 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
-.invsearch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.invsearch input[name=q]{width:auto;flex:0 1 460px;min-width:260px}
+.invsearch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.invsearch input[name=q]{width:auto;flex:0 1 400px;min-width:220px}.invsearch select{width:auto;max-width:210px}
 .tag.auto{font-style:italic}.stateful-mark{display:inline-block;margin-left:6px;font-size:12px;padding:1px 6px;border:1px solid currentColor;border-radius:8px;opacity:.8;vertical-align:middle}
 .chips.tags{align-items:center}.chip.tagchip{font-size:13px;padding:2px 10px}
 span.role{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:1px 10px;font-size:13px;
@@ -1811,14 +1828,15 @@ def make_handler(connect, admin=None):
                 if u.path == "/inventory":         # binaries, databases, external services (inventory.py)
                     from . import inventory
                     kind, text, removed = inventory.parse_query(parse_qs(u.query))
+                    filters = inventory.parse_filters(parse_qs(u.query))
                     conn = connect()
                     try:
-                        rows, counts = inventory.load(conn, kind, text, removed)
+                        rows, counts = inventory.load(conn, kind, text, removed, filters)
                     except Exception:  # noqa: BLE001 - a database from before schema 60
                         rows, counts = [], {}
                     finally:
                         conn.close()
-                    return self._send(200, inventory.render(rows, counts, kind, text, removed, nav), head=head,
+                    return self._send(200, inventory.render(rows, counts, kind, text, removed, nav, filters), head=head,
                                       forms=True)          # its search is a form
                 if u.path == "/trends":
                     from . import trends

@@ -429,7 +429,7 @@ def test_a_failed_build_is_shown_with_its_log():
     assert len(detail) <= 2000 and detail.startswith("Why: no known cause")
     assert detail.endswith("Unable to find package Acme.Internal")
     assert verify_detail({"status": "ok", "detail": "ok"}) == "ok"
-    app = loans()
+    app = loans(sandbox=[])                 # not running in the sandbox either (that would override the failure)
     app["Verified"] = True
     app["components"][3].update(VerifyStatus="build-failed", VerifyDetail=detail)
     html = webui.render_application(app)
@@ -445,3 +445,26 @@ def test_a_failed_build_is_shown_with_its_log():
     app["components"][3].update(VerifyStatus="ok", VerifyDetail=None)
     html = webui.render_application(app)
     assert "confirmed by building and running" in html and "Not confirmed:" not in html
+
+
+def test_a_component_that_runs_healthy_in_the_sandbox_is_not_a_failed_build():
+    """The scan's build failed, but the sandbox runs the component deployed and healthy (a Make it A order's patched
+    copy, built again after the scan): the page does not call it failed, not deployed or in need of a fix."""
+    app = loans()
+    app["components"][3].update(VerifyStatus="build-failed", VerifyDetail="Why: no known cause\nlog")   # CustomerPortal
+    app["deploys"] = [d for d in app["deploys"] if d.get("ComponentName") != "CustomerPortal"] + [
+        {**app["deploys"][0], "Kind": "excluded", "ComponentName": "CustomerPortal", "Reason": "build failed"}]
+    p = mp.build(app)
+    assert "CustomerPortal" in [x["c"]["ComponentName"] for x in p["now"]]
+    html = webui.render_application(app)
+    assert "Not confirmed:" not in html and "the build or run failed for" not in html
+    assert "in the sandbox; the scan's build failed" in html and "so this failure no longer holds" in html
+    assert "when Containerizer built and ran it" not in _plan_html(html)
+    ctx = {"scan_csrf": "<input>", "scan_state": {"patched": {"job": 389}}}
+    tried = webui._scan_again(app, ctx)
+    assert "Not in the sandbox: LoanTape." in tried and "CustomerPortal" not in tried
+    # not healthy in the sandbox: a failed build as before
+    app["sandbox"][0]["Status"] = "failing"
+    html = webui.render_application(app)
+    assert "Not confirmed:" in html and "the build or run failed for 1 component" in html
+    assert "CustomerPortal" in webui._scan_again(app, ctx)

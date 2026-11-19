@@ -31,8 +31,13 @@ is in `OrgRepository.HistoryError`.
 Pick each developer's **Business unit** and press **Save changes** (once, for every row you changed). **Suggested**
 is the business unit of the products of the repositories they commit to, weighed by commits: it says *matches* when
 it is the one set, *differs* when it is another. **Apply suggestions** sets it for every developer without a
-business unit whose suggestion is at least 60% sure. Filter by **No business unit** or **Ignored**, or search by
-name, e-mail, repository or business unit.
+business unit whose suggestion is at least 60% sure. Filter by **With a business unit**, **No business unit** or **Ignored**, or search by
+name, e-mail, repository or business unit. The list is in alphabetical order, 500 a page: **Previous** and **Next**
+above and below it turn the pages.
+
+To map many at once from another source (an HR export, a directory), use the [API](api.md#endpoints):
+`GET /api/v1/developers?email=` finds a developer and `PATCH /api/v1/developers/{id}` with `{"businessUnitId": 3}`
+sets the business unit (`null` clears it, `{"ignored": true}` ignores a service account).
 
 So start from what is mapped already: map a few products to business units, apply the developers' suggestions,
 check them, then turn to the repositories.
