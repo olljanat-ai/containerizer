@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from containerizer import admin as adminmod
@@ -336,6 +337,13 @@ def test_tab_is_for_administrators_only():
     assert "Ignored <span class='muted'>1</span>" in r.body
     adm2, sid2 = make_admin(conn, admin=False)
     assert get(adm2, sid2, "/admin/developers").status in (302, 303, 403)
+
+
+def test_developers_are_in_alphabetical_order():
+    adm, sid = make_admin(FakeConn())
+    body = get(adm, sid, "/admin/developers").body
+    names = re.findall(r"<b>([^<]+)</b><div class='muted small'>", body)
+    assert len(names) > 3 and names == sorted(names, key=str.casefold)
 
 
 def test_search_and_filters():

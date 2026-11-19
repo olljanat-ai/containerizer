@@ -194,8 +194,7 @@ def developers_view(adm, s, m: Model, show: str, text: str) -> str:
     show = show if show in ("all", "unmapped", "ignored") else "all"
     by_dev = m.links_of_dev()
     sugg = m.dev_suggestions()
-    devs = sorted(m.devs.values(), key=lambda d: (d["LastCommitAt"] is None, -(d["LastCommitAt"].timestamp())
-                                                   if d["LastCommitAt"] else 0, d["Email"]))
+    devs = sorted(m.devs.values(), key=lambda d: ((d["Name"] or d["Email"]).casefold(), d["Email"]))
     counts = {"all": sum(1 for d in devs if not d["Ignored"]),
               "unmapped": sum(1 for d in devs if not d["Ignored"] and d["BusinessUnitId"] is None),
               "ignored": sum(1 for d in devs if d["Ignored"])}
@@ -254,7 +253,7 @@ def developers_view(adm, s, m: Model, show: str, text: str) -> str:
     if not m.devs:
         return intro + ("<p class='muted'>No developers yet. They appear after the next run of an "
                         "<a href='/admin/scans'>organization scan</a> (a discovery run is enough).</p>")
-    more = (f"<p class='muted small'>The {ROWS} most recent of {len(devs)} are shown: search for the others.</p>"
+    more = (f"<p class='muted small'>The first {ROWS} of {len(devs)} are shown: search for the others.</p>"
             if len(devs) > ROWS else "")
     if not m.bus:
         save = "<p class='muted'>Create a <a href='/admin/business-units'>business unit</a> first.</p>"
