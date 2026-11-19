@@ -23,6 +23,9 @@ latest A-rated one): those items are first seen at that update. The databases co
 ![The inventory: the databases tab searched for a server](images/results-inventory.png#only-light){ .cz-shot }
 ![The inventory: the databases tab searched for a server](images/results-inventory-dark.png#only-dark){ .cz-shot }
 
+The same lists are in the [API](api.md): `GET /api/v1/inventory/binaries`, `/databases` and `/services`, with the
+same search and filters by application, product, name and server.
+
 The table is `InventoryItem` in the results database and the view `vInventory` (application, product and business
 unit as mapped now): the reader, writer and admin roles can query it, for reports of your own:
 

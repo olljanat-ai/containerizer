@@ -16,7 +16,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   Production files, `web.config`, `app.config`), never the credentials; **External services**: the hosts the
   configuration and code name, and NServiceBus endpoints with their transport. Each scan updates it with when each
   item was first and last seen, and marks what a scan no longer finds as removed (schema 60, `vInventory`); the
-  schema update fills it from the latest assessments.
+  schema update fills it from the latest assessments. The API has the same lists, read only:
+  `GET /api/v1/inventory/binaries`, `/databases` and `/services` (search, filters, paging).
 - **Results database access** (Admin → System, built-in SQL Server only): the read-only login `cz_readonly` (role
   `reader`; an administrator sets its password, which the appliance does not keep) and, when turned on, incoming
   connections on port 1433 from the networks the administrator lists: the system agent forwards the appliance's

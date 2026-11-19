@@ -1,5 +1,6 @@
 """The inventory (inventory.py, schema 60): binaries of A-rated builds, databases from connection strings, external
 services and NServiceBus transports, kept per application with when each was first and last found."""
+import json
 import os
 import re
 import uuid
@@ -179,6 +180,26 @@ def test_the_inventory_follows_the_assessments():
             assert inventory.load(r, "service", "", True)[0][0]["RemovedAt"] is not None
         finally:
             r.close()
+        # the API's lists (read only; filters, search, paging)
+        from containerizer.api import Api
+        api = Api(None, "", [], lambda: None)
+
+        def get(path, **q):
+            r = api.route(conn, "GET", path, {k: [str(v)] for k, v in q.items()}, None)
+            assert r.status == 200
+            return json.loads(r.body)
+        b = get("/api/v1/inventory/binaries")
+        assert b["kind"] == "binary" and [i["name"] for i in b["items"]] == ["Billing.Api.dll"]
+        assert set(b["items"][0]) >= {"applicationId", "applicationName", "repositoryUrl", "componentName", "firstSeenAt"}
+        d = get("/api/v1/inventory/databases", server="SQL01")
+        assert [(i["name"], i["server"], i["port"], i["detail"]) for i in d["items"]] == [("Billing", "sql01", 1433, "sqlserver")]
+        assert get("/api/v1/inventory/databases", q="nothing-like-this")["items"] == []
+        assert get("/api/v1/inventory/services")["items"] == []
+        svc = get("/api/v1/inventory/services", removed="true", limit=1)
+        assert len(svc["items"]) == 1 and svc["next"] == 1 and svc["items"][0]["removedAt"]
+        assert len(get("/api/v1/inventory/services", removed="true", limit=1, offset=1)["items"]) == 1
+        app_id = b["items"][0]["applicationId"]
+        assert get("/api/v1/inventory/binaries", applicationId=app_id + 1)["items"] == []
         # init_schema fills an empty inventory from the assessments
         cur.execute("DELETE cz.InventoryItem")
         conn.commit()
@@ -196,3 +217,16 @@ def test_the_inventory_follows_the_assessments():
         m.cursor().execute(f"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]")
         m.cursor().execute("IF SUSER_ID(N'cz_i_reader') IS NOT NULL DROP LOGIN [cz_i_reader]")
         m.close()
+
+
+def test_the_inventory_api_is_read_only():
+    from containerizer.api import Api, ApiError
+    api = Api(None, "", [], lambda: None)
+    for method, path, status in (("GET", "/api/v1/inventory/things", 404), ("GET", "/api/v1/inventory", 404),
+                                 ("POST", "/api/v1/inventory/binaries", 405), ("DELETE", "/api/v1/inventory/databases", 405)):
+        with pytest.raises(ApiError) as ex:
+            api.route(None, method, path, {}, None)
+        assert ex.value.status == status
+    with pytest.raises(ApiError) as ex:
+        api.route(None, "GET", "/api/v1/inventory/binaries", {"limit": ["many"]}, None)
+    assert ex.value.status == 400

@@ -64,6 +64,18 @@ Bodies are JSON (`Content-Type: application/json`, up to 64 KiB); unknown fields
 | `GET /api/v1/applications` | list with the latest rating and the [tags](sign-in.md#application-tags) (`?unmapped=true`, `?productId=`, `?name=`, `?tag=`, `?retired=true`) |
 | `GET` · `PATCH /api/v1/applications/{id}` | read · set `productId`, `displayName`, `owner`, `description`, `retired` (applications themselves come from scans) |
 | `GET /api/v1/audit` | the change history (`?table=Application`, `?rowId=`, `?limit=` up to 1000) |
+| `GET /api/v1/inventory/binaries` · `/databases` · `/services` | the [inventory](inventory.md) lists, read only (every role): `?q=` searches every column, `?name=` and `?server=` match exactly (any case), `?applicationId=`, `?productId=`, `?removed=true` adds the removed items, `?limit=` (1000 by default, up to 10000) and `?offset=`; a response with more has `next`, the offset to ask for |
+
+Each inventory item has `itemId`, `applicationId`, `applicationName`, `productId`, `productName`,
+`businessUnitName`, `repositoryUrl`, `sourcePath`, `componentName`, `name` (the binary, database or host), `server`
+(a database's server; an NServiceBus endpoint's name), `port`, `detail` (binary: its role; database: its type;
+service: the scheme), `source` (binary: its target framework; else the setting or file and line), `firstSeenAt`,
+`lastSeenAt` and `removedAt`. For example, every application that uses a database on `sql01`:
+
+```bash
+curl -s -H "Authorization: Bearer $CZ_API_KEY" \
+  "https://containerizer.example.com/api/v1/inventory/databases?server=sql01" | jq -r '.items[] | [.name, .applicationName] | @tsv'
+```
 
 `businessUnitId` and `productId` filters take an id or `none` (not assigned). Errors are
 `{"error": "...", "message": "..."}` with 400 (invalid field), 401 (no or bad token), 403 (not allowed),
