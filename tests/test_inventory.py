@@ -254,13 +254,32 @@ def test_external_services_are_combined_with_the_applications_that_use_them():
     assert groups[2]["RemovedAt"] == datetime(2026, 11, 18)
     assert groups[0]["apps"][7]["where"] == ["Billing.Api (appsettings.json:3)", "Billing.Worker (appsettings.json:5)"]
     counts = {"service": 3, "ports": [(None, 1), (443, 1), (8080, 1), (8443, 1)]}
-    body = inventory.render(rows, counts, "service", "", True, filters={"port": "443", "host": "payments"})
+    body = inventory.render(rows, counts, "service", "", True, filters={"port": "443", "host": "fqdn"})
     table = body[body.index("<table>"):]
     assert table.count("<code>api.payments.example.com</code>") == 2 and table.count("<tr>") == 4
     assert "href='/app/7' title='Billing.Api (appsettings.json:3); Billing.Worker (appsettings.json:5)'>billing</a>" in table
     assert "<option value='443' selected>443 HTTPS (1)</option>" in body and "8443 HTTPS (alt) (1)" in body
     assert "<td class='nowrap'>443 <span class='muted small'>HTTPS</span></td>" in table and "<option value='none'>No port (1)</option>" in body
-    assert "name='host' value='payments'" in body
-    assert inventory.parse_filters({"port": ["443; drop"], "host": [" 10.1 .2 "]}) == {"port": "", "host": "10.1.2"}
-    assert inventory.keep_query({"kind": ["service"], "port": ["443"], "host": ["10.1"]}) == "kind=service&port=443&host=10.1"
+    assert "<option value='fqdn' selected>FQDN</option>" in body and "<option value='ip'>IP address</option>" in body
+    assert inventory.parse_filters({"port": ["443; drop"], "host": ["10.1"]}) == {"port": "", "host": ""}
+    assert inventory.keep_query({"kind": ["service"], "port": ["443"], "host": ["ip"]}) == "kind=service&port=443&host=ip"
+    assert [inventory.address_type(x) for x in ("10.1.2.3", "[fe80::1]", "api.example.com", "payhub", "NServiceBus: MSMQ")] \
+        == ["ip", "ip", "fqdn", "fqdn", ""]
+
+    class Cur:
+        def __init__(self):
+            self.n = 0
+
+        def execute(self, sql, params=None):
+            self.n += 1
+
+        def fetchall(self):
+            return rows if self.n == 1 else []
+
+    class Conn:
+        def cursor(self, as_dict=False):
+            return cur
+    cur = Cur()
+    got, _ = inventory.load(Conn(), "service", "", True, {"port": "", "host": "ip"})
+    assert [r["Name"] for r in got] == ["10.1.2.3"]
     assert "port=" not in inventory.keep_query({"kind": ["binary"], "port": ["443"]})

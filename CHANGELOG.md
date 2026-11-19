@@ -8,6 +8,11 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.24 (2026-11-19)
+
+- **Inventory → External services**: the FQDN or IP address search field is a drop-down: **All**, **FQDN** (services
+  named by a host name) or **IP address**.
+
 ## 0.51.23 (2026-11-19)
 
 - **Inventory → External services** names the protocol of well-known ports (443 HTTPS, 1433 SQL Server, 5672 AMQP,

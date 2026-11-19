@@ -19,6 +19,7 @@ reader role, vInventory).
 from __future__ import annotations
 
 import html
+import ipaddress
 import re
 from urllib.parse import urlencode, urlparse
 
@@ -294,12 +295,26 @@ def parse_query(q: dict) -> tuple[str, str, bool]:
 
 
 def parse_filters(q: dict) -> dict:
-    """The external services' filters: {"port": a port number, "none" (no port) or "", "host": part of the FQDN or IP
-    address}."""
+    """The external services' filters: {"port": a port number, "none" (no port) or "", "host": "fqdn" (a host name),
+    "ip" (an IP address) or "" (all)}."""
     port = (q.get("port") or [""])[0]
     port = port if re.fullmatch(r"\d{1,5}|none", port) else ""
-    host = "".join((q.get("host") or [""])[0].split())[:100]
-    return {"port": port, "host": host}
+    host = (q.get("host") or [""])[0]
+    return {"port": port, "host": host if host in ADDRESS_TYPES else ""}
+
+
+ADDRESS_TYPES = {"fqdn": "FQDN", "ip": "IP address"}
+
+
+def address_type(name: str) -> str:
+    """A service's name: "ip" (an IPv4 or IPv6 address), "fqdn" (a host name) or "" (an NServiceBus transport)."""
+    if name.startswith("NServiceBus: "):
+        return ""
+    try:
+        ipaddress.ip_address(name.strip("[]"))
+        return "ip"
+    except ValueError:
+        return "fqdn"
 
 
 def keep_query(q: dict) -> str:
@@ -317,7 +332,7 @@ def _like(text: str) -> str:
 
 
 def load(conn, kind: str, text: str, removed: bool, filters: dict | None = None) -> tuple[list[dict], dict]:
-    """The items of one kind (matching the search in any column; external services also by port and host), the count of
+    """The items of one kind (matching the search in any column; external services also by port and by FQDN or IP address), the count of
     each kind (external services: each service once), and for external services the ports to pick from ("ports":
     [(port, services)])."""
     cur = conn.cursor(as_dict=True)
@@ -330,9 +345,6 @@ def load(conn, kind: str, text: str, removed: bool, filters: dict | None = None)
     elif kind == "service" and f.get("port"):
         where.append("Port = %s")
         params.append(int(f["port"]))
-    if kind == "service" and f.get("host"):
-        where.append("Name LIKE %s")
-        params.append(_like(f["host"]))
     if text:
         where.append("(Name LIKE %s OR Server LIKE %s OR ComponentName LIKE %s OR ApplicationName LIKE %s "
                      "OR ProductName LIKE %s OR Source LIKE %s OR Detail LIKE %s OR RepositoryUrl LIKE %s)")
@@ -341,6 +353,8 @@ def load(conn, kind: str, text: str, removed: bool, filters: dict | None = None)
     cur.execute(f"SELECT TOP ({top}) * FROM cz.vInventory WHERE {' AND '.join(where)} "
                 "ORDER BY Name, Server, ApplicationName, ComponentName", tuple(params))
     rows = cur.fetchall()
+    if kind == "service" and f.get("host"):          # FQDN or IP address: told apart here, not in SQL
+        rows = [r for r in rows if address_type(r["Name"]) == f["host"]]
     cur.execute("SELECT Kind, COUNT(*) AS N FROM cz.vInventory WHERE RemovedAt IS NULL AND Kind <> N'service' GROUP BY Kind "
                 "UNION ALL SELECT N'service', COUNT(*) FROM (SELECT DISTINCT Name, Port FROM cz.vInventory "
                 "WHERE RemovedAt IS NULL AND Kind = N'service') s")
@@ -411,8 +425,10 @@ def _service_filters(counts: dict, f: dict) -> str:
         opts.append(f"<option value='{v}'{' selected' if f.get('port') == v else ''}>"
                     f"{e(port_text(port) if port is not None else 'No port')} ({int(n)})</option>")
     return (f"<select name='port' aria-label='Port'>{''.join(opts)}</select> "
-            f"<input name='host' value='{e(f.get('host') or '')}' placeholder='FQDN or IP address' "
-            f"aria-label='FQDN or IP address' maxlength='100' class='host'> ")
+            "<select name='host' aria-label='FQDN or IP address'>"
+            + "".join(f"<option value='{k}'{' selected' if f.get('host') == k else ''}>{t}</option>"
+                      for k, t in (("", "All"), *ADDRESS_TYPES.items()))
+            + "</select> ")
 
 
 def _d(t) -> str:
