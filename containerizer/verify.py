@@ -572,6 +572,9 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         msgs = _messages(log) if stage == "run" else log
         # deep stack traces would push the exception message itself out of a raw tail
         tail = "\n".join(msgs.splitlines()[-200:])
+        if stage == "build":
+            from .buildlog import build_tail
+            tail = build_tail(msgs[-200000:])   # the errors, not only Docker's report of the step that failed
         d = diagnose(msgs[-60000:], stage, failures)
         if d is None and ai:
             from .ai import diagnose_failure

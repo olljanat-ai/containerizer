@@ -12,6 +12,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 - **Refactoring orders** on an application's results page opens that application's orders only
   (`/admin/refactoring?app=<id>`, with a link to every application's), not the whole list.
+- **A failed build shows its error.** "Build and run: Build failed" showed the last 1500 characters of the log,
+  which were often only Docker's own ending: the Dockerfile lines of the step that failed (a long `sed` command,
+  `>>> dotnet restore ...`) and `ERROR: failed to solve`, without the compiler's or NuGet's error. Now it shows
+  the build's lines that name an error (each once), then the end of what the build itself printed. The LLM that
+  is asked about an unexplained failure (`--ai`) gets the same text.
 
 ## 0.51.29 (2026-11-19)
 

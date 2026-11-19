@@ -38,6 +38,38 @@ def error_lines(log: str, limit: int = 1500) -> str:
     return out[-limit:] if errs else " ".join((log or "").split())[-600:]
 
 
+def build_tail(log: str, limit: int = 1500) -> str:
+    """A failed build's log for the results page, about `limit` characters: its lines that name an error (each
+    once, the last ones), then the end of what the build itself printed. Docker ends a failed build with the step
+    of the Dockerfile that failed (">>> dotnet restore ...", "ERROR: failed to solve: process ..."): the last 1500
+    characters of the log were often only that, without the compiler's or NuGet's error."""
+    lines = [l.rstrip() for l in (log or "").splitlines()]
+
+    def key(l: str) -> str:
+        return re.sub(r"^#\d+\s+[\d.]+\s+|^[\d.]+\s+", "", l).strip()
+    own = [l for l in lines if l.strip() and not DOCKER_RE.match(l.strip())
+           and not re.match(r"^(Dockerfile(\.\w+)?:\d+|-{5,}|> \[.*|#\d+ ERROR: process .*)\s*$", l.strip())]
+    seen, errs = set(), []
+    for l in own:
+        if re.search(r"\berror\b|\bERR!|\bFAILURE\b|\bfatal\b", key(l), re.I) and key(l) not in seen:
+            seen.add(key(l))
+            errs.append(l[:600])
+    if not errs:
+        return "\n".join(own or lines)[-limit:]
+    head = errs[-1:]
+    for l in reversed(errs[:-1]):                       # the last errors that fit in two thirds
+        if sum(len(x) + 1 for x in head) + len(l) > limit * 2 // 3:
+            break
+        head.insert(0, l)
+    rest, room = [], limit - sum(len(x) + 1 for x in head) - 8
+    for l in reversed([x for x in own if key(x) not in seen]):      # then the end of what the build printed
+        if len(l) + 1 > room:
+            break
+        rest.insert(0, l)
+        room -= len(l) + 1
+    return "\n".join(head) + ("\n------\n" + "\n".join(rest) if rest else "")
+
+
 def unresolved_hosts(log: str) -> list[str]:
     """The names whose lookups failed, from the lines that say a lookup failed."""
     out: list[str] = []
