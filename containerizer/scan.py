@@ -833,6 +833,56 @@ def _expand(v: str, props: dict[str, str]) -> str:
     return _PROP_REF_RE.sub(lambda m: props.get(m.group(1), m.group(0)), v)
 
 
+_PROP_EXPR_RE = re.compile(r"\$\((\w+)((?:\.\w+\([^()]*\))*)\)")
+_PROP_CALL_RE = re.compile(r"\.(\w+)\(([^()]*)\)")
+_STR_ARGS_RE = re.compile(r"""\s*(?:'([^']*)'|"([^"]*)"|`([^`]*)`)\s*(?:,|$)""")
+
+
+def _assembly_name(props: dict[str, str], stem: str) -> str:
+    """The assembly name MSBuild gives the project: the AssemblyName property with its property references and
+    string functions evaluated ("$(MSBuildProjectName).Api", "$(AssemblyName.Replace(' ', '_'))", where a
+    reference to itself is the default, the project file's name), or the project file's name when it is not set
+    or uses something this does not evaluate. The container starts <assembly name>.dll, so a wrong guess here
+    fails at run time."""
+    def value(name: str, depth: int) -> str | None:
+        if name in ("MSBuildProjectName", "AssemblyName", "TargetName"):
+            return stem                         # AssemblyName inside its own definition: the value so far
+        if name == "RootNamespace" and name not in props:
+            return stem.replace(" ", "_")
+        return expand(props[name], depth + 1) if name in props else None
+
+    def expand(v: str, depth: int = 0) -> str | None:
+        if depth > 5:
+            return None
+        out, pos = [], 0
+        for m in _PROP_EXPR_RE.finditer(v):
+            cur = value(m.group(1), depth)
+            for fn, raw in _PROP_CALL_RE.findall(m.group(2)):
+                args = [next(x for x in g if x or not any(g)) for g in _STR_ARGS_RE.findall(raw)] if raw.strip() else []
+                if cur is None:
+                    break
+                if fn == "Replace" and len(args) == 2 and args[0]:
+                    cur = cur.replace(args[0], args[1])
+                elif fn in ("ToLower", "ToLowerInvariant") and not args:
+                    cur = cur.lower()
+                elif fn in ("ToUpper", "ToUpperInvariant") and not args:
+                    cur = cur.upper()
+                elif fn == "Trim" and not args:
+                    cur = cur.strip()
+                else:
+                    cur = None
+            if cur is None:
+                return None
+            out += [v[pos:m.start()], cur]
+            pos = m.end()
+        out.append(v[pos:])
+        res = "".join(out)
+        return None if "$(" in res or "@(" in res or "%(" in res else res
+
+    raw = (props.get("AssemblyName") or "").strip()
+    return (expand(raw) if raw else None) or stem
+
+
 def _msbuild_elements(path: Path, root: Path, seen: set | None = None, outer: tuple = ()):
     """Yield (element, condition, chain) for an MSBuild file in document order, with local
     <Import>s inlined where they appear. `condition` is the nearest Condition on the element or an
@@ -1091,7 +1141,7 @@ def parse_dotnet_project(path: Path, root: Path) -> Project:
     _apply_item_conditions(pr, items)
     default_ot = "Exe" if re.search(r"Sdk\.(Web|Worker)$", pr.sdk or "") else ("Library" if pr.sdk_style else "")
     pr.output_type = props.get("OutputType", default_ot)
-    pr.assembly_name = props.get("AssemblyName", path.stem)
+    pr.assembly_name = _assembly_name(props, path.stem)
     return pr
 
 

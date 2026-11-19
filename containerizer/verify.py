@@ -685,6 +685,17 @@ def _save(path: Path, d: dict, header: str) -> None:
 def persist_learning(a: AppAssessment, c: Component, plan: dict, patches) -> None:
     from .confidence import reset_cache, unknowns
 
+    # 0) the component builds and runs now: findings an earlier failed build or run of it left behind are over
+    # (the ones the sandbox cluster observed stay: this run did not test the cluster)
+    fpath = LEARNED / "findings.yaml"
+    if fpath.exists():
+        fd = _load(fpath, "rules")
+        keep = [r for r in fd["rules"] if not (r.get("learned_from") == f"{a.name}/{c.name}" and not r.get("observed_in")
+                                               and r.get("category") == "runtime-observed")]
+        if len(keep) != len(fd["rules"]):
+            fd["rules"] = keep
+            _save(fpath, fd, "# Findings observed at runtime by `containerizer verify --learn`.\n")
+
     # 1) plan patches that led to a working container become plan rules
     path = LEARNED / "plan.yaml"
     d = _load(path, "rules")

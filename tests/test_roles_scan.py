@@ -204,3 +204,34 @@ def test_blazor_wasm_standalone_is_spa_and_hosted_is_assets(tmp_path):
     assert r["Standalone"] == "spa"
     assert r["Hosted.Client"] == "spa-assets"
     assert r["Hosted"] == "web"
+
+
+def test_assembly_name_expression_is_evaluated(tmp_path):
+    """<AssemblyName>$(AssemblyName.Replace(' ', '_'))</AssemblyName>: the container starts My_Shop.dll, not a dll
+    named after the expression."""
+    import json
+    from containerizer.assess import assess
+    from containerizer.generate import make_plan
+    from containerizer.scan import _assembly_name
+    from tests.test_engine import write
+    write(tmp_path, "src/My Shop/My Shop.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk.Web">
+          <PropertyGroup>
+            <TargetFramework>net10.0</TargetFramework>
+            <AssemblyName>$(AssemblyName.Replace(' ', '_'))</AssemblyName>
+          </PropertyGroup>
+        </Project>""")
+    write(tmp_path, "src/My Shop/Program.cs", """
+        var app = WebApplication.CreateBuilder(args).Build();
+        app.MapGet("/healthz", () => "ok");
+        app.Run();""")
+    a = assess(tmp_path)
+    c = a.components[0]
+    assert c.project.assembly_name == "My_Shop" and c.name == "My_Shop"
+    assert "My_Shop.dll" in json.dumps(make_plan(a, c)) and "$(" not in json.dumps(make_plan(a, c))
+    assert _assembly_name({"AssemblyName": "$(MSBuildProjectName).Api"}, "Shop") == "Shop.Api"
+    assert _assembly_name({"AssemblyName": "$(Company).$(MSBuildProjectName.ToLower())", "Company": "Acme"}, "Web") == "Acme.web"
+    # what is not evaluated falls back to the default, the project file's name
+    assert _assembly_name({"AssemblyName": "$([System.IO.Path]::GetFileName('x'))"}, "Web") == "Web"
+    assert _assembly_name({"AssemblyName": "$(Unknown).Web"}, "Web") == "Web"
+    assert _assembly_name({}, "Web") == "Web"

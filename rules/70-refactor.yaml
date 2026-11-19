@@ -18,6 +18,12 @@ refactor:
     core-eol: >-
       the container runs the application on the framework it targets (its own runtime image, or rolled forward):
       retargeting it is an upgrade, not a containerization
+    node-unsupported-version: >-
+      the container runs the application on the Node.js line its package.json allows (an out-of-support image):
+      moving to a supported line is an upgrade, not a containerization
+    java-unsupported-version: >-
+      the container builds and runs the application on Java 8, which compiles and runs code written for Java 7
+      or older: moving to a newer Java is an upgrade, not a containerization
     dataprotection-default: >-
       the generated manifests mount one Data Protection key, generated in the cluster by External Secrets
       Operator, read-only at the key folder (plan-dataprotection-keys), so every replica and restart shares it

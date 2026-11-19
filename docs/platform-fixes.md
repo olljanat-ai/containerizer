@@ -62,7 +62,7 @@ others say in their `fix` what to set.
 | `system-drawing-core` | 10-runtime.yaml | System.Drawing on .NET 6+ | partial | On .NET 6 only: `System.Drawing.EnableUnixSupport` in runtimeconfig plus `libgdiplus`, on the unpatched .NET 6 image. Removed in .NET 7. |
 | `java-process-windows-commands` | 12-java.yaml | Starts Windows programs (cmd, PowerShell, .exe) | partial | As `process-start-exe`: the Linux tool under the same name, when one exists. |
 | `java-waffle-windows-auth` | 12-java.yaml | Windows integrated authentication with WAFFLE | code-only | Replaces a Windows-only or removed API; no configuration reaches it (code change, or the component stays on a Windows VM). |
-| `java-unsupported-version` | 12-java.yaml | Java 7 or older | partial | Run on an archived JDK image of that line (unpatched), as done for out-of-support .NET. |
+| `java-unsupported-version` | 12-java.yaml | Java 7 or older | platform | Now `config`: built and run on the Java 8 image, which compiles that source level and runs its class files. |
 | `java-ee-application-server` | 12-java.yaml | Needs a full Jakarta EE application server (EJB, EAR) | partial | The vendor's Linux image (Open Liberty, WildFly, Payara) with the server configuration as files/env. |
 | `java-vendor-app-server-api` | 12-java.yaml | Vendor application server APIs (WebLogic, WebSphere, JBoss) | partial | The vendor's Linux image of the same server, when the vendor publishes one. |
 | `node-edge-dotnet` | 13-node.yaml | .NET code run in-process with Edge.js | code-only | Replaces a Windows-only or removed API; no configuration reaches it (code change, or the component stays on a Windows VM). |
@@ -71,7 +71,7 @@ others say in their `fix` what to set.
 | `node-windows-only-tools` | 13-node.yaml | Windows-only helper packages (printing, WMI, event log) | code-only | Replaces a Windows-only or removed API; no configuration reaches it (code change, or the component stays on a Windows VM). |
 | `node-windows-only-dependency` | 13-node.yaml | Dependency that installs only on Windows | code-only | Replaces a Windows-only or removed API; no configuration reaches it (code change, or the component stays on a Windows VM). |
 | `node-process-windows-commands` | 13-node.yaml | Starts Windows programs (cmd, PowerShell, .exe) | partial | As `process-start-exe`: the Linux tool under the same name, when one exists. |
-| `node-unsupported-version` | 13-node.yaml | Pinned to an end-of-life Node.js line | partial | Run on the archived Node.js image of that line (unpatched), as done for out-of-support .NET. |
+| `node-unsupported-version` | 13-node.yaml | Pinned to an end-of-life Node.js line | platform | Now `config`: built and run on the image of the line it allows (14, 16, 18 or 20, unpatched), as done for out-of-support .NET. |
 | `node-sass-libsass` | 13-node.yaml | node-sass (LibSass) native build | partial | Build stage on a Node.js line that node-sass has binaries for; the runtime image is unaffected. |
 | `pinvoke-kernel32` | 20-platform.yaml | Win32 kernel/OLE/system DLL native calls | code-only | Replaces a Windows-only or removed API; no configuration reaches it (code change, or the component stays on a Windows VM). |
 | `native-dll-shipped` | 20-platform.yaml | Binary DLLs checked into the source tree | code-only | Replaces a Windows-only or removed API; no configuration reaches it (code change, or the component stays on a Windows VM). |

@@ -40,7 +40,8 @@ def images() -> dict:
 
     def sub(v):
         if isinstance(v, dict):
-            return {k: sub(x) for k, x in v.items()}
+            # out-of-support lines stay on their own tag: the lock moves a build image past its end of support
+            return {k: x if k == "legacy" else sub(x) for k, x in v.items()}
         if isinstance(v, str) and v in lock:
             return lock[v]["tag"]
         return v
@@ -426,8 +427,13 @@ def merge_plan(plan: dict, patch: dict) -> dict:
                     plan[k].append(x)
         elif k == "env":
             plan["env"].update({kk: str(vv) for kk, vv in v.items()})
+        elif k == "build_env":
+            plan["build_env"] = {**(plan.get("build_env") or {}), **{kk: str(vv) for kk, vv in v.items()}}
         else:
             plan[k] = v
+    if "node_engine" in (patch or {}) and "node_props" in plan:
+        from .gen_jvm_node import apply_node_engine
+        apply_node_engine(plan)             # a dependency's engines range moves the image to a line it allows
     if plan["add_packages"]:
         plan["base"] = "full"
     return plan

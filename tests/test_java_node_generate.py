@@ -213,8 +213,50 @@ def test_native_addons_build_on_the_full_image_and_old_engines(tmp_path):
     node(tmp_path, "", {"name": "svc", "engines": {"node": "^20"}, "scripts": {"start": "node index.js"},
                         "dependencies": {"express": "4", "bcrypt": "5"}}, {"index.js": SERVER})
     _, _, plan, df = plan_and_df(tmp_path, "svc")
-    assert plan["native_build"] and plan["node"] == 22
-    assert "FROM node:22-bookworm AS build" in df and "nodejs22-debian12" in df and "apt-get" not in df
+    assert plan["native_build"] and plan["node"] == 20          # the line the application allows, out of support or not
+    assert "FROM node:20-bookworm AS build" in df and "nodejs20-debian12" in df and "apt-get" not in df
+    assert any(r["rule"] == "node-out-of-support-line" for r in plan["reasons"]) and "npm_config_engine_strict" not in df
+
+
+def test_a_dependency_engine_range_moves_the_image_to_a_line_it_allows(tmp_path):
+    """The build's engine error is a retry on another Node.js line, not a finding: the application stays A."""
+    from containerizer.generate import merge_plan
+    from containerizer.gen_jvm_node import dockerfile_node
+    log = ("npm error code EBADENGINE\nnpm error engine Unsupported engine\n"
+           "npm error notsup Not compatible with your version of node/npm: @sap/approuter@20.0.0\n"
+           "npm error notsup Required: {\"node\":\"^20.0.0 || ^22.0.0\"}\nnpm error notsup Actual:   {\"npm\":\"11\",\"node\":\"v24.1.0\"}")
+    for text, rng in ((log, "^20.0.0 || ^22.0.0"),
+                      ('error x@1: The engine "node" is incompatible with this module. Expected version "^20.0.0 || ^22.0.0". Got "24.1.0"', "^20.0.0 || ^22.0.0"),
+                      ("npm warn EBADENGINE Unsupported engine {\nnpm warn EBADENGINE   package: 'x@1',\n"
+                       "npm warn EBADENGINE   required: { node: '^20.0.0 || ^22.0.0' },", "^20.0.0 || ^22.0.0"),
+                      ('ERR_PNPM_UNSUPPORTED_ENGINE  Unsupported engine for x@1: wanted: {"node":"^18"} (current: '
+                       '{"node":"v24.1.0","pnpm":"9.1.0"})', "^18"),
+                      ("ERR_PNPM_UNSUPPORTED_ENGINE  Unsupported environment (bad pnpm and/or Node.js version)\n\n"
+                       'Your Node version is incompatible with "/src".\n\nExpected version: ^18\nGot: v24.1.0', "^18")):
+        fr, caps = diagnose(text, "build", load_failures())
+        assert fr["id"] == "build-node-engine-unsupported" and fr["outcome"] == "retry" and "finding" not in fr, text
+        assert caps["range"] == rng
+    node(tmp_path, "", {"name": "svc", "scripts": {"start": "node index.js"}, "dependencies": {"express": "4"}},
+         {"index.js": SERVER})
+    a, c, plan, df = plan_and_df(tmp_path, "svc")
+    assert plan["node"] == 24
+    merge_plan(plan, {"node_engine": "^20.0.0 || ^22.0.0"})
+    assert plan["node"] == 22 and not plan.get("ignore_engines")
+    assert "FROM node:22-bookworm-slim AS build" in dockerfile_node(plan) and "nodejs22-debian12" in dockerfile_node(plan)
+    merge_plan(plan, {"node_engine": "^18"})                # an out-of-support line has its own image
+    assert plan["node"] == 18 and "nodejs18-debian12:nonroot" in dockerfile_node(plan)
+    merge_plan(plan, {"node_engine": "^12"})                           # no image: the nearest line, not enforced
+    assert plan["node"] == 24 and plan["ignore_engines"]
+    assert 'npm_config_engine_strict="false"' in dockerfile_node(plan)
+
+
+def test_engines_older_than_every_image_use_the_oldest_line(tmp_path):
+    node(tmp_path, "", {"name": "svc", "engines": {"node": "10.x"}, "scripts": {"start": "node index.js"},
+                        "dependencies": {"express": "4"}}, {"index.js": SERVER})
+    a, c, plan, df = plan_and_df(tmp_path, "svc")
+    assert plan["node"] == 14 and "FROM node:14-bullseye-slim AS build" in df and "nodejs14-debian11:nonroot" in df
+    assert 'npm_config_engine_strict="false"' in df
+    assert c.verdict == "config" and a.rating == "A"                   # end-of-life Node.js alone does not keep it at B
 
 
 def test_node_spa_uses_the_repository_package_manager(tmp_path):

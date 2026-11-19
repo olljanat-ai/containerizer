@@ -110,31 +110,49 @@ def parse_node_project(path: Path, root: Path) -> Project:
     return pr
 
 
-def engine_max_major(rng: str) -> int | None:
-    """The newest Node.js major version a semver range (engines.node) allows; None when it has no
-    upper bound (">=18", "*") or cannot be read. "^14" -> 14, "12.x || 14.x" -> 14, ">=10 <15" -> 14."""
-    best = -1
+def engine_bounds(rng: str) -> list[tuple[int, int | None]] | None:
+    """The Node.js major versions a semver range (engines.node) allows: (lowest, highest) per `||` alternative,
+    highest None without an upper bound; None when the range allows anything or cannot be read.
+    "^14" -> [(14, 14)], "12.x || 14.x" -> [(12, 12), (14, 14)], ">=10 <15" -> [(10, 14)], ">=18" -> [(18, None)]."""
+    out = []
     for alt in str(rng).split("||"):
         alt = alt.strip()
         if not alt or alt in ("*", "x", "latest"):
             return None
-        alt = re.sub(r"\s+-\s+", " <=", alt)           # "12 - 14" -> "12 <=14"
-        top = None
+        alt = re.sub(r"(\d\S*)\s+-\s+", r">=\1 <=", alt)       # "12 - 14" -> ">=12 <=14"
+        low, top = 0, None
         for tok in re.findall(r"(\^|~|>=|<=|>|<|=)?\s*v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?", alt):
             op, major = tok[0], int(tok[1])
             minor_set = tok[2] not in ("", "x", "*")
             patch_set = tok[3] not in ("", "x", "*")
             if op in (">", ">="):
+                # ">14" is 15 and up; ">14.2" still allows 14
+                low = max(low, major + 1 if op == ">" and not minor_set else major)
                 continue
             if op == "<":
                 cap = major - 1 if not minor_set or (tok[2] == "0" and (not patch_set or tok[3] == "0")) else major
             else:                                       # ^ ~ = <= or a bare version
                 cap = major
+                if op != "<=":
+                    low = max(low, major)
             top = cap if top is None else min(top, cap)
-        if top is None:
-            return None                                 # only lower bounds
-        best = max(best, top)
-    return best if best >= 0 else None
+        out.append((low, top))
+    return out or None
+
+
+def engine_max_major(rng: str) -> int | None:
+    """The newest Node.js major version a semver range (engines.node) allows; None when it has no
+    upper bound (">=18", "*") or cannot be read. "^14" -> 14, "12.x || 14.x" -> 14, ">=10 <15" -> 14."""
+    bounds = engine_bounds(rng)
+    if not bounds or any(top is None for _, top in bounds):
+        return None
+    return max(top for _, top in bounds)
+
+
+def engine_allows(rng: str, major: int) -> bool:
+    """Whether the range allows this Node.js major version (a range that cannot be read allows any)."""
+    bounds = engine_bounds(rng)
+    return not bounds or any(low <= major and (top is None or major <= top) for low, top in bounds)
 
 
 def _find_lockfile(d: Path, root: Path) -> tuple[Path, str] | None:
