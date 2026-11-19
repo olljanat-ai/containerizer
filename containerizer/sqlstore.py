@@ -247,6 +247,8 @@ def init_schema(conn) -> None:
     for b in schema_batches(conn.schema):
         cur.execute(b)
     conn.commit()
+    from .inventory import backfill
+    backfill(conn)                      # once: the inventory from the assessments made before schema 60
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +387,8 @@ def store_assessment(conn, doc: dict, source: dict, assessed_at=None) -> int:
                 _finding(cur, assessment_id, comp_id, _runtime_finding(v["finding"]))
         for f in doc.get("repo_findings", []):
             _finding(cur, assessment_id, None, f)
+        from .inventory import sync
+        sync(cur, app_id, assessment_id, doc)           # binaries, databases, external services (schema 60)
         conn.commit()
         return assessment_id
     except Exception:

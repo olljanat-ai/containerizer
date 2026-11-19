@@ -963,7 +963,8 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
                 f"<p class='note'>{e('; '.join(parts))}.</p>")
     empty = "<p>No assessments yet. Run <code>containerizer assess --sql …</code> to add some.</p>" if not all_apps else ""
     meta = " · ".join(([f"Last assessed {_date(last)}"] if last else [])
-                      + ([f"<a href='{e(_trends_href(bu_filter))}'>Trends over time</a>"] if all_apps else []))
+                      + ([f"<a href='{e(_trends_href(bu_filter))}'>Trends over time</a>",
+                          "<a href='/inventory'>Inventory</a>"] if all_apps else []))
     return page("Containerization readiness", f"""{_nav(nav)}
 <header><h1>Containerization readiness</h1>
 <p class='lead'>How ready are our applications to run in Linux containers?</p>
@@ -1571,6 +1572,7 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
 .chips+.chips{margin-top:8px}
+.invsearch{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}.invsearch input[name=q]{width:auto;flex:0 1 460px;min-width:260px}
 .tag.auto{font-style:italic}.stateful-mark{display:inline-block;margin-left:6px;font-size:12px;padding:1px 6px;border:1px solid currentColor;border-radius:8px;opacity:.8;vertical-align:middle}
 .chips.tags{align-items:center}.chip.tagchip{font-size:13px;padding:2px 10px}
 span.role{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:1px 10px;font-size:13px;
@@ -1660,6 +1662,9 @@ def _keep_query(path: str, q: dict) -> str:
         from .trends import parse_query
         rng, bu, product = parse_query(q)
         return urlencode([(k, v) for k, v in (("range", rng), ("bu", bu), ("product", product)) if v is not None])
+    if path == "/inventory":
+        from .inventory import keep_query
+        return keep_query(q)
     if path == "/connectivity":
         return urlencode([(k, q[k][0]) for k in ("product", "bu") if re.fullmatch(r"\d{1,9}", (q.get(k) or [""])[0])])
     if path == "/":
@@ -1781,7 +1786,7 @@ def make_handler(connect, admin=None):
                     return self._admin("GET", head)
                 nav = admin.nav(self.headers) if admin else ""
                 m = re.fullmatch(r"/app/(\d{1,9})", u.path)
-                if admin and (u.path in ("/", "/trends", "/connectivity") or m):    # sign-in first when CONTAINERIZER_VIEWERS is set
+                if admin and (u.path in ("/", "/trends", "/connectivity", "/inventory") or m):    # sign-in first when CONTAINERIZER_VIEWERS is set
                     keep = _keep_query(u.path, parse_qs(u.query))
                     stop, s = admin.gate(self.headers, u.path, keep)
                     if stop:
@@ -1803,6 +1808,18 @@ def make_handler(connect, admin=None):
                     name = next((a.get("ProductName") for a in data["apps"] if pr is not None and a.get("ProductId") == pr), None)
                     title = f"Connectivity: {name}" if name else "Connectivity of all applications"
                     return self._send(200, connectivityui.render_portfolio(data, title, nav), head=head, forms=bool(nav))
+                if u.path == "/inventory":         # binaries, databases, external services (inventory.py)
+                    from . import inventory
+                    kind, text, removed = inventory.parse_query(parse_qs(u.query))
+                    conn = connect()
+                    try:
+                        rows, counts = inventory.load(conn, kind, text, removed)
+                    except Exception:  # noqa: BLE001 - a database from before schema 60
+                        rows, counts = [], {}
+                    finally:
+                        conn.close()
+                    return self._send(200, inventory.render(rows, counts, kind, text, removed, nav), head=head,
+                                      forms=True)          # its search is a form
                 if u.path == "/trends":
                     from . import trends
                     rng, bu, product = trends.parse_query(parse_qs(u.query))

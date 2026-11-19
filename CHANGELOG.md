@@ -8,6 +8,26 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.17 (2026-11-19)
+
+- **Inventory** (results site → Inventory, `/inventory`): from source code to binaries, databases and external
+  services across every application, with a search. **Binaries**: the main binary of each component of A-rated
+  builds; **Databases**: the database and server of each connection string (`appsettings.json` with its Release and
+  Production files, `web.config`, `app.config`), never the credentials; **External services**: the hosts the
+  configuration and code name, and NServiceBus endpoints with their transport. Each scan updates it with when each
+  item was first and last seen, and marks what a scan no longer finds as removed (schema 60, `vInventory`); the
+  schema update fills it from the latest assessments.
+- **Results database access** (Admin → System, built-in SQL Server only): the read-only login `cz_readonly` (role
+  `reader`; an administrator sets its password, which the appliance does not keep) and, when turned on, incoming
+  connections on port 1433 from the networks the administrator lists: the system agent forwards the appliance's
+  port 1433 to SQL Server (`systemd-socket-proxyd`, transient unit `containerizer-sql-proxy`) and the firewall
+  accepts it from those networks only, never from the sandbox's pods or the builds. An app update: the OS image does
+  not change.
+- **NServiceBus**: the finding **NServiceBus** (information) and the endpoint's transport (its package, else the
+  code; MSMQ for NServiceBus 6 and earlier without one). Endpoints on SQL Server and PostgreSQL transports now get
+  the lab's SQL Server and PostgreSQL, and NServiceBus.RabbitMQ's `host=` connection string under an NServiceBus key
+  the lab's RabbitMQ. The transport is not changed in code.
+
 ## 0.51.16 (2026-11-19)
 
 - **Discovery schedule**: an organization scan has a discovery schedule of its own (days and time, UTC; new scans

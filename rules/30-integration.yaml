@@ -630,6 +630,29 @@ rules:
       use a managed offering.
     fix: Provide the broker connection via Secret.
 
+  # NServiceBus: its transport decides where it runs. The facts rules (05-facts.yaml nsb-*) find the endpoint and the
+  # transport; facts.nservicebus_facts names it, and the results' inventory lists it as a service of the component.
+  - id: nservicebus
+    applies_to: [dotnet]
+    when:
+      any:
+        - package: 'NServiceBus(\..*)?'
+        - code: '\bnew\s+EndpointConfiguration\s*\(|\bEndpoint\.(Start|Create)\w*\s*\('
+    severity: info
+    category: messaging
+    effort: 0
+    title: NServiceBus
+    why: >-
+      The component is an NServiceBus endpoint. Its transport, chosen in code, decides where it can run: RabbitMQ,
+      SQL Server, PostgreSQL, Azure Service Bus and Amazon SQS work from a Linux container, MSMQ does not (the
+      finding msmq). The lab runs RabbitMQ, SQL Server and PostgreSQL: an endpoint on one of those gets the lab's
+      service; the component's inventory names the transport it found.
+    fix: >-
+      Keep the transport's connection string in configuration (from a Secret). An endpoint on MSMQ, or on a cloud
+      transport the lab does not run, needs its transport changed in code (UseTransport) to run in the lab.
+    refs:
+      - https://docs.particular.net/transports/
+
   - id: mqtt
     applies_to: [dotnet]
     when:

@@ -12,12 +12,12 @@ services:
   sqlserver:
     when:
       any:
-        - package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer.*|Hangfire\.SqlServer|dbup-sqlserver|Aspire\.Microsoft\.(Data\.SqlClient|EntityFrameworkCore\.SqlServer)'
+        - package: 'Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.EntityFrameworkCore\.SqlServer.*|Hangfire\.SqlServer|dbup-sqlserver|NServiceBus\.(Transport\.)?SqlServer|Aspire\.Microsoft\.(Data\.SqlClient|EntityFrameworkCore\.SqlServer)'
         - {package: 'com\.microsoft\.sqlserver:mssql-jdbc|net\.sourceforge\.jtds:jtds|io\.r2dbc:r2dbc-mssql|io\.quarkus:quarkus-jdbc-mssql|mssql|tedious|pyodbc|pymssql|aioodbc|mssql-django|github\.com/(microsoft|denisenkom)/go-mssqldb', runtime: true}
   postgres:
     when:
       any:
-        - package: 'Npgsql.*|dbup-postgresql|Hangfire\.PostgreSql|Aspire\.Npgsql.*'
+        - package: 'Npgsql.*|dbup-postgresql|NServiceBus\.Transport\.PostgreSql|Hangfire\.PostgreSql|Aspire\.Npgsql.*'
         - {package: 'org\.postgresql:(postgresql|r2dbc-postgresql)|io\.quarkus:quarkus-(jdbc-postgresql|reactive-pg-client)|pg|pg-promise|postgres|psycopg|psycopg2|psycopg2-binary|psycopg-binary|asyncpg|pg8000|github\.com/jackc/pgx(/v\d+)?|github\.com/lib/pq', runtime: true}
   redis:
     when:

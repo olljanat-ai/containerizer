@@ -681,10 +681,42 @@ systemctl reboot
 At the next start the schema is upgraded if the backup is older, and the logins of the web UI and the
 scan worker get the passwords of the backup and are linked to their users in the restored database again.
 
+## Results database access
+
+**Admin → System → Results database access** opens the built-in SQL Server's results database to reporting tools
+(Power BI, Excel, a SQL client). Both settings are off to begin with, and both are for the built-in SQL Server only:
+an [external database](#external-database)'s DBA decides who connects to it.
+
+- **Read-only login** `cz_readonly`: set its password (12 to 128 characters, three of upper case, lower case, digits
+  and symbols) and the system agent makes the login, or gives it the new password. It is in the database role
+  `reader`: it reads the results views (`vApplicationLatest`, `vComponentLatest`, `vAssessmentHistory`,
+  `vInventory`, ...) as the results pages do, and cannot change anything. The appliance does not keep the password:
+  keep it in your password manager, or set a new one here. **Turn off the read-only login** disables it.
+- **Incoming connections**: tick **Accept connections from the network on port 1433** and list the networks the
+  clients connect from (`10.20.0.0/16`, `192.0.2.15`; IPv6 too). The firewall then accepts TCP 1433 from those
+  networks only, never from the sandbox's applications or the builds, and the system agent forwards port 1433 of the
+  appliance's own addresses to SQL Server (`systemd-socket-proxyd` in the transient unit `containerizer-sql-proxy`;
+  every 5 minutes it checks it is running and follows a changed address). SQL Server itself still listens on
+  127.0.0.1 only.
+
+Clients connect to `<appliance address>,1433`, database `Containerizer`, user `cz_readonly`. SQL Server encrypts
+the connection with its own self-signed certificate, so tell the client to trust it (`TrustServerCertificate=yes`,
+or **Trust server certificate** in SQL Server Management Studio and Power BI). For example:
+
+```text
+Server=containerizer.example.com,1433;Database=Containerizer;User Id=cz_readonly;Password=...;Encrypt=yes;TrustServerCertificate=yes
+```
+
+SQL Server sees these connections as coming from 127.0.0.1 (the forwarder): the firewall's networks are what limits
+who connects. Its failed sign-ins are in `docker logs cz-mssql`.
+
+![Admin → System → Results database access: the read-only login and incoming connections from two networks](images/admin-system-sql-access.png#only-light){ .cz-shot }
+![Admin → System → Results database access: the read-only login and incoming connections from two networks](images/admin-system-sql-access-dark.png#only-dark){ .cz-shot }
+
 ## Security notes
 
 - OS: read-only, signed upgrades only, no package manager in use, kernel and network hardening sysctls,
-  root's default password must be changed at the first sign-in (`passwd -l root` for SSH keys only), no service but SSH and HTTPS reachable, outbound allow-list for everything.
+  root's default password must be changed at the first sign-in (`passwd -l root` for SSH keys only), no service but SSH and HTTPS reachable (and the results database on port 1433 from the networks an administrator lists, when [turned on](#results-database-access)), outbound allow-list for everything.
 - Web UI: no privileges (systemd sandbox: read-only system, no capabilities, system call filter); its
   database passwords come as systemd credentials. It cannot change the OS: upgrades, roll backs and the
   firewall go through the system agent, which checks every request again.

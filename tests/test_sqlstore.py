@@ -625,7 +625,7 @@ def test_developers_and_one_product_per_project(db):
 
 FORGOTTEN_REFS = {"Component", "ApplicationAssessment", "ComponentAssessment", "Finding", "SandboxCheck", "SandboxIdpClient",
                   "DevDatabase", "LlmJob", "LlmHeavyWindow", "EgressDecision", "ComponentLink", "DatabaseEdit",
-                  "ComponentMigration"}
+                  "ComponentMigration", "InventoryItem"}
 
 
 @needs_sql

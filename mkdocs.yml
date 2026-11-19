@@ -62,6 +62,7 @@ nav:
       - Platform fixes for refactor findings: platform-fixes.md
       - Refactoring patches: refactoring.md
       - Egress and network connectivity: egress.md
+      - "Inventory: binaries, databases, services": inventory.md
       - Gateway API routes: gateway-api.md
       - "Clusters: sandbox, development, acceptance, production": clusters.md
       - Build pipelines: build-pipelines.md

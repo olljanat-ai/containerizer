@@ -152,3 +152,35 @@ rules:
       all:
         - {code: '@Controller\(\s*[''"`](?P<health>health|healthz)[''"`]\s*\)', in: ["*.ts", "*.js"]}
         - {not: {code: 'setGlobalPrefix\(', in: ["*.ts", "*.js"]}}
+
+  # ---- NServiceBus: the endpoint and the transport it sends and receives messages over (facts nservicebus;
+  # inventory.nservicebus_facts names the transport from its package, else the code; the inventory shows it).
+  # The transport package says it; else the code: UseTransport<SqlServerTransport>() (NServiceBus 5-7) or
+  # new SqlServerTransport(...) (8+); NServiceBus 6 and earlier without either sends over MSMQ, its default.
+  - id: nsb-transport-package
+    phase: facts
+    priority: 70
+    applies_to: [dotnet]
+    when: {package: 'NServiceBus\.(RabbitMQ|SqlServer|Transport\.SqlServer|Transport\.PostgreSql|AmazonSQS|Transport\.AzureServiceBus|AzureServiceBus|Azure\.Transports\.WindowsAzureServiceBus|Transport\.AzureStorageQueues|Azure\.Transports\.WindowsAzureStorageQueues|Transport\.Msmq|Msmq|Transport\.IBMMQ|ActiveMQ|Transport\.Bridge)'}
+    set: {nservicebus: "true"}
+
+  - id: nsb-transport-code
+    phase: facts
+    priority: 60
+    applies_to: [dotnet]
+    when: {code: '\bUseTransport\s*<\s*(?P<nsb_transport_code>\w+?)Transport\s*>|\bUseTransport\s*\(\s*new\s+(?P<nsb_transport_code2>\w+?)Transport\s*\(|\bnew\s+(?P<nsb_transport_code3>RabbitMQ|SqlServer|PostgreSql|Learning|Msmq|AzureServiceBus|AzureStorageQueue|Sqs)Transport\s*\('}
+    set: {nservicebus: "true"}
+
+  - id: nsb-endpoint
+    phase: facts
+    priority: 60
+    applies_to: [dotnet]
+    when: {code: '\bnew\s+EndpointConfiguration\s*\(\s*"(?P<nsb_endpoint>[^"]{1,100})"'}
+    set: {nservicebus: "true"}
+
+  - id: nsb-package
+    phase: facts
+    priority: 50
+    applies_to: [dotnet]
+    when: {package: 'NServiceBus(\.Host|\.Core|\.Extensions\.Hosting|\.Persistence\.\w+|\.\w+)?'}
+    set: {nservicebus: "true"}
