@@ -21,6 +21,9 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   names the hosts whose lookups failed and points at Admin → Firewall (also for `getaddrinfo EAI_AGAIN <host>`,
   which npm's native add-on installs print: `release-assets.githubusercontent.com` for a prebuilt binary,
   `nodejs.org` for node-gyp's headers), or the package feed that refused the sign-in.
+- **Backup of an appliance whose SQL Server is the Express edition.** It failed with "BACKUP DATABASE WITH
+  COMPRESSION is not supported on Express Edition" (Msg 1844). The database is backed up without compression
+  there; the backup archive is gzip either way.
 - **The whole build and run log of a failed component, to download.** The scan's verification keeps a log per
   attempt (`build-1.log`, `run-2.log` beside `build.log` and `run.log` in the work folder): a retry no longer
   overwrites the log that explained the failure. A component whose build or run failed has them stored with its
