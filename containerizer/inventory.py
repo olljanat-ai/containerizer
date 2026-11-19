@@ -382,6 +382,26 @@ def combine(rows: list[dict]) -> list[dict]:
     return list(out.values())
 
 
+WELL_KNOWN = {      # the protocol a well-known port carries, for the Port drop-down and column
+    20: "FTP data", 21: "FTP", 22: "SSH / SFTP", 23: "Telnet", 25: "SMTP", 53: "DNS", 80: "HTTP", 88: "Kerberos",
+    110: "POP3", 123: "NTP", 135: "MS RPC", 137: "NetBIOS", 139: "NetBIOS / SMB", 143: "IMAP", 161: "SNMP",
+    389: "LDAP", 443: "HTTPS", 445: "SMB", 465: "SMTPS", 514: "Syslog", 587: "SMTP submission", 636: "LDAPS",
+    993: "IMAPS", 995: "POP3S", 1080: "SOCKS proxy", 1433: "SQL Server", 1434: "SQL Server Browser", 1521: "Oracle",
+    1883: "MQTT", 2049: "NFS", 2181: "ZooKeeper", 2375: "Docker", 2376: "Docker (TLS)", 3268: "LDAP Global Catalog",
+    3269: "LDAPS Global Catalog", 3306: "MySQL / MariaDB", 3389: "RDP", 4222: "NATS", 5000: "HTTP (dev)",
+    5001: "HTTPS (dev)", 5044: "Logstash Beats", 5432: "PostgreSQL", 5671: "AMQPS", 5672: "AMQP (RabbitMQ)",
+    5985: "WinRM", 5986: "WinRM (HTTPS)", 6379: "Redis", 6380: "Redis (TLS)", 7000: "Cassandra", 8080: "HTTP (alt)",
+    8081: "HTTP (alt)", 8443: "HTTPS (alt)", 8883: "MQTT (TLS)", 9000: "HTTP (alt)", 9042: "Cassandra CQL",
+    9092: "Kafka", 9093: "Kafka (TLS)", 9200: "Elasticsearch", 9300: "Elasticsearch transport",
+    9418: "Git", 11211: "Memcached", 15672: "RabbitMQ management", 27017: "MongoDB", 50000: "DB2",
+}
+
+
+def port_text(port) -> str:
+    """A port with the protocol it usually carries: "443 HTTPS"."""
+    return f"{port} {WELL_KNOWN[port]}" if port in WELL_KNOWN else str(port)
+
+
 def _service_filters(counts: dict, f: dict) -> str:
     """The external services' Port drop-down (the ports there are, with how many services use each) and the FQDN or IP
     address filter."""
@@ -389,7 +409,7 @@ def _service_filters(counts: dict, f: dict) -> str:
     for port, n in counts.get("ports") or []:
         v = str(port) if port is not None else "none"
         opts.append(f"<option value='{v}'{' selected' if f.get('port') == v else ''}>"
-                    f"{e(str(port) if port is not None else 'No port')} ({int(n)})</option>")
+                    f"{e(port_text(port) if port is not None else 'No port')} ({int(n)})</option>")
     return (f"<select name='port' aria-label='Port'>{''.join(opts)}</select> "
             f"<input name='host' value='{e(f.get('host') or '')}' placeholder='FQDN or IP address' "
             f"aria-label='FQDN or IP address' maxlength='100' class='host'> ")
@@ -411,7 +431,9 @@ def _services(rows: list[dict]) -> tuple[str, int]:
                                         f"{', '.join(links[10:])}</details>" if len(links) > 10 else "")
         gone = f" <span class='st st-off'>removed {_d(g['RemovedAt'])}</span>" if g["RemovedAt"] else ""
         port = g["Port"] if g["Port"] else ", ".join(g["servers"])     # an NServiceBus transport: its endpoints
-        trs.append(f"<tr><td><code>{e(g['Name'])}</code>{gone}</td><td>{e(str(port or ''))}</td>"
+        port_cell = (f"{int(port)} <span class='muted small'>{e(WELL_KNOWN[port])}</span>" if port in WELL_KNOWN
+                     else e(str(port or '')))
+        trs.append(f"<tr><td><code>{e(g['Name'])}</code>{gone}</td><td class='nowrap'>{port_cell}</td>"
                    f"<td>{e(', '.join(g['protocols']))}</td><td class='num'>{len(apps)}</td><td>{cell}</td>"
                    f"<td class='small nowrap'>{_d(g['FirstSeenAt'])}<div class='muted'>{_d(g['LastSeenAt'])}</div></td></tr>")
     table = ("<table><thead><tr><th>Service</th><th>Port</th><th>Protocol</th><th>Applications</th>"

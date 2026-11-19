@@ -25,7 +25,7 @@ latest A-rated one): those items are first seen at that update. The databases co
 
 **External services** lists each service once (its host and port), with how many applications use it and which
 (hover over an application for its components and the files and lines that name the service). Pick a **port** from
-the drop-down (each port there is, with how many services use it), and type part of an **FQDN or IP address** to
+the drop-down (each port there is, with the protocol a well-known port carries and how many services use it), and type part of an **FQDN or IP address** to
 narrow the list down; the search box still searches every column.
 
 ![The inventory: external services on port 443, each with the applications that use it](images/results-inventory-services.png#only-light){ .cz-shot }
