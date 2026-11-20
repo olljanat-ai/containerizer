@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.51.33 (2026-11-20)
+
+- **A restart in the middle of a scan no longer fails a repository.** Stopping the scan worker (a restart, an app
+  update, a shutdown) signals the run and the processes scanning its repositories at the same moment, and a process
+  that was gone before the run had heard of the stop was recorded as "the process scanning it ended without a result
+  (exit code -15)". The run now checks for the stop before it blames the repository, which is then scanned by the
+  next run as any other unfinished one.
+
 ## 0.51.32 (2026-11-19)
 
 - **Make it A: every B application** estimates with the queue as it is: the page says how many jobs the LLM queue

@@ -2289,6 +2289,18 @@ def _run_parallel(repos: list, n: int, o: OrgOptions, prov, out, work: Path, reg
                     if hooks and hasattr(hooks, "git"):
                         hooks.git(*ev)
                 if res is None:
+                    if not stopped and p.exitcode == -15:
+                        # ended by SIGTERM: a stopping service signals the run and its repositories' processes at the
+                        # same moment, so the process can be gone before the run has heard of the stop
+                        for _ in range(20):
+                            if hooks and hasattr(hooks, "should_stop") and hooks.should_stop():
+                                stopped = True
+                                stop.set()
+                                log(f"stopped: {done} of {len(repos)} repositories done, "
+                                    f"waiting for the {len(running)} in progress")
+                                pending.clear()
+                                break
+                            _time.sleep(0.1)
                     if stopped:                         # the machine is stopping: not this repository's fault
                         shutil.rmtree(stage, ignore_errors=True)
                         continue
