@@ -982,6 +982,44 @@ def test_cancel_ends_repositories_in_progress(tmp_path, monkeypatch, parallel):
     assert not (tmp_path / "work" / "parallel" / "one").exists()
 
 
+def test_a_stopping_service_is_not_a_repository_error(tmp_path, monkeypatch):
+    """A stopping service signals the run and its repositories' processes at once: a process SIGTERM ended just
+    before the run heard of the stop records nothing; one that ends so on its own is an error."""
+    import os
+    import signal
+
+    def dies(r, *a, **k):
+        os.kill(os.getpid(), signal.SIGTERM)
+    monkeypatch.setattr(orgmod, "_repo_job", dies)
+    repos = [SourceRepo("github", "acme", NO_PROJECT, "one", "https://github.com/acme/one.git", id="1")]
+
+    def run(hooks):
+        o = OrgOptions(provider="github", org="acme", registry="r.example/x", token="t", hooks=hooks, parallel=1)
+        finished = []
+        stopped = orgmod._run_parallel(repos, 1, o, None, None, tmp_path / "work", None, "1.0.0", None, False, {},
+                                       {r.key: r.name for r in repos}, lambda *a: finished.append(a), lambda m: None)
+        return stopped, finished
+
+    class Stopping:
+        calls = 0
+
+        def should_stop(self):                          # the run hears of the stop after the process is gone
+            Stopping.calls += 1
+            return Stopping.calls > 3
+
+        def should_abort(self):
+            return False
+    assert run(Stopping()) == (True, [])
+
+    class Running:
+        def should_stop(self):
+            return False
+        should_abort = should_stop
+    stopped, finished = run(Running())
+    assert not stopped and len(finished) == 1
+    assert "ended without a result (exit code -15)" in finished[0][2].reason
+
+
 def test_deploy_app_writes_the_pushed_digest_into_the_kustomization(tmp_path, monkeypatch):
     """#292: the sandbox runs by digest from the first deploy (the sandbox runs no image automation)."""
     from containerizer import imagescan
