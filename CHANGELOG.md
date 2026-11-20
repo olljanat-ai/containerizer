@@ -8,6 +8,34 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.52.0 (2026-11-20)
+
+A minor release: it changes the OS image (the sandbox's telemetry services, Prometheus and Grafana settings), so
+appliances get it as an OS upgrade.
+
+- **A+: an application rated A whose OpenTelemetry telemetry is collected** ([docs/telemetry.md](docs/telemetry.md)).
+  The front page and the results page show **A+** in place of A (the front page's *Ready now (A)* tile says how
+  many); the rules still rate it A.
+- **Make it A+** (administrators; only for an application whose latest assessment rates A): the button in the new
+  **OpenTelemetry** box of the results page, or Admin → **Make it A+** for every A application at once (the ones
+  ticked; nothing is ordered by opening the page). No code change, no LLM, no build: within a few minutes the LLM
+  queue runner patches the sandbox's copy of the application (as debug mode does), and each component's workloads
+  get the auto-instrumentation agent of their runtime from an init container (.NET 8 to 10, Java 8 and later,
+  Node.js 22 and later, Python 3.10 and later), the collector's address, the component as service name and one
+  more NetworkPolicy rule, to the collector. A component with the OpenTelemetry SDK in its code gets the address
+  only; Go and static sites are left as they are, with the reason. The application's own folder in the output
+  repository does not change. **Turn it off** takes it out again. What is injected is data:
+  `rules/65-telemetry.yaml`.
+- **A+ is measured.** The queue runner asks Prometheus which services of the application's namespace send
+  (`CONTAINERIZER_TELEMETRY_PROMETHEUS`), and the box says *Ordered*, *Instrumented*, *A+*, *No telemetry* or
+  which component cannot be instrumented and why (schema 63: `Application.Telemetry`, `TelemetryState`; the change
+  history records the switch).
+- **Grafana collects and shows the sandbox applications' telemetry.** The sandbox cluster runs an OpenTelemetry
+  Collector, Tempo (traces) and Loki (logs) in `cz-monitoring` (7 days kept); the metrics, with request rate,
+  errors and duration made from the spans, go to the appliance's Prometheus (job `sandbox-telemetry`). Grafana has
+  the data sources Tempo and Loki and the dashboard **Containerizer: application telemetry**; the results page of
+  an instrumented application links to it.
+
 ## 0.51.33 (2026-11-20)
 
 - **A restart in the middle of a scan no longer fails a repository.** Stopping the scan worker (a restart, an app

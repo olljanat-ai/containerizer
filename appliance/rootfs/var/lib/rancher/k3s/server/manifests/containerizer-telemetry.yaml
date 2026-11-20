@@ -1,0 +1,376 @@
+# OpenTelemetry for the sandbox's applications (Make it A+: docs/telemetry.md, containerizer/telemetry.py).
+# k3s applies this file at every start (auto-deploying manifests).
+#
+# - otel-collector: where the instrumented applications send (OTLP over HTTP, port 4318; their NetworkPolicies let
+#   them reach these pods and nothing else new). Traces go to Tempo, logs to Loki, metrics are served for the
+#   appliance's Prometheus (on the host: job sandbox-telemetry), with the request rate, errors and duration of
+#   every service made from its spans (span_metrics).
+# - tempo and loki: one small instance each, 7 days kept, on a volume of the appliance's persistent partition.
+#   Grafana (on the host) reads them at their fixed cluster addresses, as Caddy reaches Traefik.
+#
+# The images are pinned by digest here; an OS upgrade brings new pins.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector
+  namespace: cz-monitoring
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+          grpc:
+            endpoint: 0.0.0.0:4317
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 20
+      batch: {}
+      # the kubelet's probes are not requests of the application: no span for them, so none in its request rate
+      filter/probes:
+        error_mode: ignore
+        traces:
+          span:
+            - 'IsMatch(attributes["user_agent.original"], "^kube-probe/")'
+            - 'kind == SPAN_KIND_SERVER and IsMatch(attributes["url.path"], "^/(healthz?|livez?|readyz?|health/.*|actuator/health.*)$")'
+            - 'kind == SPAN_KIND_SERVER and IsMatch(attributes["http.target"], "^/(healthz?|livez?|readyz?|health/.*|actuator/health.*)$")'
+      # metrics carry the labels that say whose they are, not every attribute of the process (container id, pid, ...)
+      transform/metrics:
+        error_mode: ignore
+        metric_statements:
+          - context: resource
+            statements:
+              - 'keep_keys(attributes, ["service.name", "service.namespace", "service.instance.id", "service.version", "k8s.namespace.name", "k8s.pod.name", "k8s.container.name", "deployment.environment.name", "telemetry.sdk.language", "process.runtime.name", "process.runtime.version"])'
+    connectors:
+      span_metrics:
+        histogram:
+          unit: s
+          explicit:
+            buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+        metrics_expiration: 15m
+    exporters:
+      otlp_http/tempo:
+        endpoint: http://tempo.cz-monitoring.svc.cluster.local:4318
+      otlp_http/loki:
+        endpoint: http://loki.cz-monitoring.svc.cluster.local:3100/otlp
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        # every series carries its service and namespace (service_name, k8s_namespace_name, ...)
+        resource_constant_labels:
+          included: ["*"]
+        metric_expiration: 15m
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      telemetry:
+        metrics:
+          level: none
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, filter/probes, batch]
+          exporters: [otlp_http/tempo, span_metrics]
+        metrics:
+          receivers: [otlp, span_metrics]
+          processors: [memory_limiter, transform/metrics, batch]
+          exporters: [prometheus]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp_http/loki]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: cz-monitoring
+  labels: {app.kubernetes.io/name: otel-collector}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: otel-collector}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: otel-collector}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: otel-collector
+          image: docker.io/otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+          args: ["--config=/etc/otelcol/config.yaml"]
+          ports:
+            - {name: otlp-http, containerPort: 4318}
+            - {name: otlp-grpc, containerPort: 4317}
+            - {name: otel-metrics, containerPort: 8889}
+          readinessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: {path: /, port: 13133}
+            initialDelaySeconds: 15
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/otelcol, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: otel-collector}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: cz-monitoring
+  labels: {app.kubernetes.io/name: otel-collector}
+spec:
+  selector: {app.kubernetes.io/name: otel-collector}
+  ports:
+    - {name: otlp-http, port: 4318, targetPort: otlp-http}
+    - {name: otlp-grpc, port: 4317, targetPort: otlp-grpc}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo
+  namespace: cz-monitoring
+data:
+  tempo.yaml: |
+    stream_over_http_enabled: true
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            http:
+              endpoint: "0.0.0.0:4318"
+    backend_scheduler:
+      provider:
+        compaction:
+          compaction:
+            block_retention: 168h
+    backend_worker:
+      compaction:
+        block_retention: 168h
+    storage:
+      trace:
+        backend: local
+        wal:
+          path: /var/tempo/wal
+        local:
+          path: /var/tempo/blocks
+    usage_report:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tempo
+  namespace: cz-monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 10Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: cz-monitoring
+  labels: {app.kubernetes.io/name: tempo}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: tempo}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: tempo}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: tempo
+          image: docker.io/grafana/tempo:3.1.1@sha256:64e2fbd56d9c2b3412a4b430a58ea59e91a670b1e75f920a0c702213ad145044
+          args: ["-config.file=/etc/tempo/tempo.yaml"]
+          ports:
+            - {name: http, containerPort: 3200}
+            - {name: otlp-http, containerPort: 4318}
+          readinessProbe:
+            httpGet: {path: /ready, port: 3200}
+            initialDelaySeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/tempo, readOnly: true}
+            - {name: data, mountPath: /var/tempo}
+      volumes:
+        - name: config
+          configMap: {name: tempo}
+        - name: data
+          persistentVolumeClaim: {claimName: tempo}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: cz-monitoring
+  labels: {app.kubernetes.io/name: tempo}
+spec:
+  # fixed: Grafana on the host reads it here (grafana/provisioning/datasources/telemetry.yaml)
+  clusterIP: 10.43.0.81
+  selector: {app.kubernetes.io/name: tempo}
+  ports:
+    - {name: http, port: 3200, targetPort: http}
+    - {name: otlp-http, port: 4318, targetPort: otlp-http}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki
+  namespace: cz-monitoring
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      allow_structured_metadata: true
+      retention_period: 168h
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+    analytics:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki
+  namespace: cz-monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 10Gi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: cz-monitoring
+  labels: {app.kubernetes.io/name: loki}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: loki}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: loki}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: loki
+          image: docker.io/grafana/loki:3.7.10@sha256:b43c257ccfc925d4a50b8717cac61a3b51df8c48d01847936057e5c4075a24a7
+          args: ["-config.file=/etc/loki/loki.yaml"]
+          ports:
+            - {name: http, containerPort: 3100}
+          readinessProbe:
+            httpGet: {path: /ready, port: 3100}
+            initialDelaySeconds: 30
+          resources:
+            requests: {cpu: 50m, memory: 256Mi}
+            limits: {memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: config, mountPath: /etc/loki, readOnly: true}
+            - {name: data, mountPath: /loki}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          configMap: {name: loki}
+        - name: data
+          persistentVolumeClaim: {claimName: loki}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: cz-monitoring
+  labels: {app.kubernetes.io/name: loki}
+spec:
+  # fixed: Grafana on the host reads it here (grafana/provisioning/datasources/telemetry.yaml)
+  clusterIP: 10.43.0.82
+  selector: {app.kubernetes.io/name: loki}
+  ports:
+    - {name: http, port: 3100, targetPort: http}
+---
+# the collector's metrics for Prometheus on the host (job sandbox-telemetry): a fixed cluster address
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-metrics
+  namespace: cz-monitoring
+  labels: {app.kubernetes.io/name: otel-collector}
+spec:
+  clusterIP: 10.43.0.83
+  selector: {app.kubernetes.io/name: otel-collector}
+  ports:
+    - {name: otel-metrics, port: 8889, targetPort: otel-metrics}

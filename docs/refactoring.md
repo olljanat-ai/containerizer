@@ -334,6 +334,9 @@ each with **End now**. Applications that already had an order waiting are not tu
 ![Make it A: every B application, with the LLM-heavy option above the Queue button](images/admin-make-all-a-heavy-dark.png#only-dark){ .cz-shot }
 
 
+**After A: A+.** An application that rates A can be instrumented with OpenTelemetry in the sandbox, without a code
+change and without the LLM: [Make it A+](telemetry.md).
+
 To see where many Make it A orders fail, export their outcome as JSON: see
 [Database tasks from the shell](appliance-admin.md#database-tasks-from-the-shell).
 

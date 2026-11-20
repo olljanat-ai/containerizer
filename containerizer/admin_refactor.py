@@ -346,7 +346,10 @@ def show_list(adm, conn, s, a, flash: str, app_id: int | None = None) -> Respons
                    f"<td>{dl}</td></tr>")
     bulk = (f"<p><a class='button' href='{BASE}/make-all-a'>Make it A: every B application…</a> <span class='muted small'>"
             f"Every B-rated application with its estimate, smallest first; queue the ones under a number of tokens, "
-            f"approved.</span></p>" if a.admin else "")
+            f"approved.</span></p>"
+            f"<p><a class='button' href='/admin/telemetry'>Make it A+: every A application…</a> "
+            f"<span class='muted small'>OpenTelemetry for the applications rated A, in the sandbox: no code change, "
+            f"no LLM.</span></p>" if a.admin else "")
     body = (bulk + only + "<p class='muted'>Refactoring patches for B-rated applications: the LLM changes the code for the findings "
             "that need targeted code changes, and the patch is applied, checked with the rules and built and run "
             "before it is offered. Order one on the application's results page (<b>Refactoring</b>). Orders wait in "

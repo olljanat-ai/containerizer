@@ -1,0 +1,36 @@
+# The sandbox applications' traces and logs (Make it A+, docs/telemetry.md): Tempo and Loki in the k3s sandbox
+# cluster (k3s manifest containerizer-telemetry.yaml), at their fixed cluster addresses. Their metrics are in
+# Prometheus (job sandbox-telemetry).
+apiVersion: 1
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://10.43.0.81:3200
+    editable: false
+    jsonData:
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        tags: [{key: 'service.name', value: 'service_name'}]
+        filterByTraceID: true
+        filterBySpanID: false
+      nodeGraph:
+        enabled: true
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://10.43.0.82:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        - datasourceUid: tempo
+          matcherType: label
+          matcherRegex: 'trace[_]?id'
+          name: TraceID
+          url: '$${__value.raw}'
+          urlDisplayLabel: View trace

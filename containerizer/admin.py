@@ -36,7 +36,7 @@ TABLE_TEXT = {"BusinessUnit": "Business unit", "Product": "Product", "Applicatio
               "LlmQueueSettings": "LLM queue settings", "DatabaseEdit": "Sandbox database",
               "RoleAssignment": "Role", "Developer": "Developer"}
 FIELD_TEXT = {"Name": "Name", "DisplayName": "Display name", "Description": "Description", "Owner": "Owner",
-              "Retired": "Hidden", "SandboxEnabled": "Sandbox", "SandboxDebug": "Sandbox debug mode", "DeployMode": "Deploy mode", "OutputRepo": "Own output repository",
+              "Retired": "Hidden", "SandboxEnabled": "Sandbox", "SandboxDebug": "Sandbox debug mode", "Telemetry": "OpenTelemetry (Make it A+)", "DeployMode": "Deploy mode", "OutputRepo": "Own output repository",
               "OutputBranch": "Its branch", "OutputPath": "Its folder", "Product": "Product", "BusinessUnit": "Business unit", "InfoUrl": "Product page link",
               # the internal rules repository (rule review)
               "RepoUrl": "Repository URL", "Branch": "Branch", "Path": "Folder",
@@ -281,6 +281,9 @@ class Admin:
         if kind == "verify-log":                     # the results page's whole build and run logs: no tab of its own
             from . import verifylog
             return verifylog.route(self, conn, s, a, method, parts)
+        if kind == "telemetry":                      # Make it A+ (admin_telemetry.py): administrators
+            from . import admin_telemetry
+            return admin_telemetry.route(self, conn, s, a, method, parts, q, form)
         if kind == "tags":                           # the results page's tags of an application: no tab of its own
             from . import tags
             return tags.route(self, conn, s, a, method, parts, form)
@@ -392,6 +395,8 @@ class Admin:
                      ("refactoring", "Refactoring"), ("egress", "Egress")]
         elif a.owner and hasattr(self, "route_scans"):                  # product owners: their applications' patches
             tabs += [("refactoring", "Refactoring"), ("egress", "Egress")]
+        if a.admin and hasattr(self, "route_scans"):                     # Make it A+ (admin_telemetry.py)
+            tabs += [("telemetry", "Make it A+")]
         if a.admin and hasattr(self, "route_scans"):                     # tokens of the organizations (admin_credentials.py)
             tabs += [("source-control", "Source control & LLM")]
         if (self.devdb is not None or self.system) and (a.admin or a.operator):   # dev databases, browser (admin_devdb.py)

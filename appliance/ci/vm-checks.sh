@@ -72,7 +72,16 @@ wait_for 900 "Prometheus reads k3s and Flux" sh -c 'curl -fsS http://127.0.0.1:9
 import json, sys
 up = {t[\"labels\"][\"job\"] for t in json.load(sys.stdin)[\"data\"][\"activeTargets\"] if t[\"health\"] == \"up\"}
 sys.exit(0 if {\"k3s-apiserver\", \"kubelet\", \"kubelet-cadvisor\", \"kube-state-metrics\", \"flux\"} <= up else 1)"'
-for d in containerizer-k3s containerizer-flux; do
+# Make it A+ (docs/telemetry.md): the sandbox's collector, Tempo and Loki run, and Prometheus and Grafana on the host
+# reach them at their fixed cluster addresses
+wait_for 900 "OpenTelemetry collector, Tempo and Loki" k3s kubectl -n cz-monitoring wait --for=condition=Available \
+  deploy/otel-collector deploy/tempo deploy/loki --timeout=10s
+wait_for 300 "Prometheus reads the collector" sh -c 'curl -fsS http://127.0.0.1:9090/api/v1/targets?state=active | python3 -c "
+import json, sys
+up = {t[\"labels\"][\"job\"] for t in json.load(sys.stdin)[\"data\"][\"activeTargets\"] if t[\"health\"] == \"up\"}
+sys.exit(0 if \"sandbox-telemetry\" in up else 1)"'
+wait_for 300 "Tempo and Loki answer the host" sh -c 'curl -fsS http://10.43.0.81:3200/ready >/dev/null && curl -fsS http://10.43.0.82:3100/ready >/dev/null'
+for d in containerizer-k3s containerizer-flux containerizer-telemetry; do
   curl -fsS "http://127.0.0.1:3000/grafana/api/dashboards/uid/$d" -u "admin:$(cat /etc/containerizer/secrets/grafana-admin)" >/dev/null \
     || { echo "Grafana has no dashboard $d" >&2; exit 1; }
 done

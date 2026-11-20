@@ -93,6 +93,10 @@ explains how the assessment works and what it generates. To install and use it, 
    finding counts, marked *via* the library. ("Make it A" therefore also sends the file that opens the
    database, with the finding, instead of adding it as a separate data-move task.)
 
+   **A+** is shown in place of A for an application that rates A and whose OpenTelemetry telemetry is collected
+   in the sandbox. It is not a rating of the rules: an administrator orders **Make it A+**, which instruments the
+   application without a code change ([A+: OpenTelemetry](telemetry.md)).
+
    The letter grades the **whole application's end state**: an application with one component that must stay
    on Windows is rated for that, even when its other components run in Linux containers today. What can go
    first is on the results page's [migration plan](#migration-plan).
