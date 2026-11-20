@@ -1,6 +1,6 @@
 {
  "rules": [
-  {"host": "ghcr.io", "ports": ["tcp/443"], "note": "appliance upgrades, Flux images"},
+  {"host": "ghcr.io", "ports": ["tcp/443"], "note": "appliance upgrades, Flux images, OpenTelemetry agents (Make it A+)"},
   {"host": "pkg-containers.githubusercontent.com", "ports": ["tcp/443"], "note": "GHCR image layers"},
   {"host": "tuf-repo-cdn.sigstore.dev", "ports": ["tcp/443"], "note": "signature check of upgrades (Sigstore trust root)"},
   {"host": "rekor.sigstore.dev", "ports": ["tcp/443"], "note": "signature check of upgrades (transparency log)"},

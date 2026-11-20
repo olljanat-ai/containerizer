@@ -327,7 +327,7 @@ Docker Hub, which the default firewall rules allow.
 
 ## Metrics
 
-Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has four dashboards, in the
+Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has six dashboards, in the
 **containerizer** folder (the dashboard list at the top of each links to the others):
 
 | Dashboard | Shows |
@@ -335,6 +335,7 @@ Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has
 | **Containerizer: organization scans** (the home page) | Scans, the scan worker, LLM usage, the LLM queue and the built-in LLM ([scheduled-scans.md](scheduled-scans.md#metrics-and-grafana)) |
 | **Containerizer: LLM token usage** | The tokens the LLMs reported in their answers, for the long run, by business unit, product, application and component, by feature and model, with their cost: from the results database, not Prometheus ([LLM token usage](#llm-token-usage)) |
 | **Containerizer: application mapping** | How the applications are mapped to products over time: the repositories that declare an application ID in `metadata.json`, the applications by external ID, by project, by hand or in no product, the IDs without an application or a product; recorded at the end of every scan run, from the results database ([external application IDs](scheduled-scans.md#external-application-ids-metadatajson)) |
+| **Containerizer: application telemetry** | The OpenTelemetry traces, metrics and logs of the sandbox applications that were made A+: which applications and services send, their request rate, errors and duration, the latest traces (Tempo) and logs (Loki) ([A+: OpenTelemetry](telemetry.md#grafana)) |
 | **Containerizer: k3s sandbox cluster** | Whether the API server and kubelet answer, pods running and not running, containers waiting (CrashLoopBackOff, ImagePullBackOff, ...), restarts, deployments short of replicas, CPU, memory and network by namespace and the top pods, volume usage, and the API server's requests and latency |
 | **Containerizer: Flux** | First, whether the sandbox is connected to the output repository at all: what `cz-sandbox` last found (connected, or why not: `sandbox.env` without a repository URL, no token, the secret store or Flux not ready) and when, and the root sync's GitRepository and Kustomization (`flux-system/containerizer-sandbox`: missing, not ready with the reason, or ready at a revision); the applications' containers that do not start (ImagePullBackOff, CrashLoopBackOff, ...) and restart. Then every Flux object (Kustomizations, Git, OCI and Helm sources, Helm releases, image automation) with its Ready state, reason, revision and suspend flag; the ones not ready first; the controllers' reconciliations, errors, reconcile time, work queues, CPU and memory |
 

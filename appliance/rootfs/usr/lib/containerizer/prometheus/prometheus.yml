@@ -74,6 +74,14 @@ scrape_configs:
         action: drop
       - regex: id|name|image
         action: labeldrop
+  # The sandbox applications' OpenTelemetry metrics (Make it A+, docs/telemetry.md): the collector in the cluster
+  # (cz-monitoring/otel-collector, k3s manifest containerizer-telemetry.yaml) serves what the instrumented
+  # applications send, and the request rate, errors and duration it makes from their spans, at a fixed cluster
+  # address. Every series names its application (k8s_namespace_name) and component (service_name).
+  - job_name: sandbox-telemetry
+    honor_labels: true                  # job and instance are the application's service and pod
+    static_configs:
+      - targets: ["10.43.0.83:8889"]
   # kube-state-metrics (cz-monitoring) and Flux's controllers (flux-system), found through the API server
   - job_name: kubernetes-pods
     honor_labels: true                  # kube-state-metrics' own namespace and pod labels describe the objects

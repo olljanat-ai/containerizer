@@ -429,6 +429,25 @@ in the sandbox right now.
 
 </div>
 
+<div class="cz-feature" markdown>
+
+<div markdown>
+
+### From A to A+: OpenTelemetry without a code change
+
+**Make it A+** instruments an application rated A with OpenTelemetry in the sandbox: the agent of its runtime is
+injected, no code changes, no LLM, no build. It is A+ once its traces, metrics and logs arrive, and Grafana shows
+them.
+
+[A+: OpenTelemetry :octicons-arrow-right-24:](telemetry.md)
+
+</div>
+
+![The results page of an A+ application with its OpenTelemetry box](images/results-make-it-a-plus.png#only-light){ .cz-shot }
+![The results page of an A+ application with its OpenTelemetry box](images/results-make-it-a-plus-dark.png#only-dark){ .cz-shot }
+
+</div>
+
 <div class="cz-feature cz-reverse" markdown>
 
 <div markdown>

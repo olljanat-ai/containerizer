@@ -61,15 +61,17 @@ eval "exec $CZ_DEBUG_START"
 
 
 class Switches(set):
-    """The applications whose sandbox is turned off (the set itself: SourceKeys and ApplicationIds), and in `debug`
-    the ones in debug mode. One object, so every writer of sandbox/ that knows the first knows the second."""
+    """The applications whose sandbox is turned off (the set itself: SourceKeys and ApplicationIds), in `debug`
+    the ones in debug mode and in `telemetry` the ones with OpenTelemetry turned on (Make it A+, telemetry.py). One
+    object, so every writer of sandbox/ that knows the first knows the others."""
 
-    def __init__(self, off=(), debug=()):
+    def __init__(self, off=(), debug=(), telemetry=()):
         super().__init__(off)
         self.debug = set(debug)
+        self.telemetry = set(telemetry)
 
     def __bool__(self) -> bool:
-        return bool(len(self) or self.debug)
+        return bool(len(self) or self.debug or self.telemetry)
 
 
 def debug_of(off) -> set:

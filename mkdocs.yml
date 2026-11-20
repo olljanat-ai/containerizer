@@ -61,6 +61,7 @@ nav:
       - Platform migrations: platform-migration.md
       - Platform fixes for refactor findings: platform-fixes.md
       - Refactoring patches: refactoring.md
+      - "A+: OpenTelemetry": telemetry.md
       - Egress and network connectivity: egress.md
       - "Inventory: binaries, databases, services": inventory.md
       - Gateway API routes: gateway-api.md

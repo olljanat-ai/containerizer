@@ -1535,6 +1535,11 @@ class Runner:
                 n += variant.sync_sandbox(self.connect, self.key, base, log=self.log)
             except Exception as ex:             # the output repository away: next time
                 self.log(f"sandbox switch: {type(ex).__name__}: {ex}"[:400])
+            try:                                # Make it A+: whose telemetry arrives (telemetry.py)
+                from . import telemetry
+                n += telemetry.check(self.connect, log=self.log)
+            except Exception as ex:             # a database from before schema 63, Prometheus away: next time
+                self.log(f"telemetry: {type(ex).__name__}: {ex}"[:400])
             try:                                # their state as the cluster and the output repository say now
                 base = Path(os.environ.get(refactor.WORK_ENV) or tempfile.gettempdir()) / "variants"
                 n += variant.refresh(self.connect, self.key, base, log=self.log)

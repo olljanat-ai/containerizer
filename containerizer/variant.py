@@ -42,6 +42,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1112,6 +1113,7 @@ def refresh(connect, key, work: Path, log=print, now: datetime | None = None, he
 # --------------------------------------------------------------------------- the applications' sandbox switch
 
 SYNC_STATE = "sandbox-off.json"
+TELEMETRY_REFRESH = 6 * 3600        # seconds: how often the telemetry patches and their state are written again
 
 
 def sync_sandbox(connect, key, work: Path, log=print) -> int:
@@ -1133,14 +1135,20 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
         creds = load(conn, key if key is not None else private_key_from_env()) if scans else None
     finally:
         conn.close()
-    from . import __version__, sandboxdebug
+    from . import __version__, sandboxdebug, telemetry
     debug = sandboxdebug.debug_of(off)
-    sig = json.dumps(sorted(str(x) for x in off) if not debug else
+    tel = getattr(off, "telemetry", None) or set()
+    sig = json.dumps(sorted(str(x) for x in off) if not debug and not tel else
                      [sorted(str(x) for x in off), sorted(str(x) for x in debug), sandboxdebug.tools_ref("r") or "",
-                      __version__])     # the version: an update writes the debug patches again
+                      __version__]      # the version: an update writes the debug patches again
+                     # telemetry (Make it A+): also written again every few hours, so its state follows what the
+                     # scans deployed since (a new component, another runtime)
+                     + ([sorted(str(x) for x in tel), telemetry.endpoint(), int(time.time() // TELEMETRY_REFRESH)]
+                        if tel else []))
     state = work / SYNC_STATE
     if state.is_file() and state.read_text() == sig:
         return 0
+    reports: dict = {}
     n, seen, missed = 0, set(), []
     hosts = allowed_hosts() | (creds.hosts() if creds else set())
     pushed: set = set()
@@ -1166,7 +1174,7 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
         try:
             o = options(scan, write, d)
             out = Output(o, d)
-            write_sandbox(out.root, out.url, o.output_branch, off)
+            write_sandbox(out.root, out.url, o.output_branch, off, **({"telemetry_reports": reports} if tel else {}))
             if out.commit("containerizer: sandbox/ follows the applications' sandbox switches (Admin → Applications)"):
                 n += 1
                 log(f"sandbox switch: {repo}: sandbox/ regenerated")
@@ -1176,6 +1184,16 @@ def sync_sandbox(connect, key, work: Path, log=print) -> int:
         finally:
             shutil.rmtree(d, ignore_errors=True)
     if not missed:
+        if tel:     # the state of Make it A+ (Application.TelemetryState): what was instrumented in each application
+            try:
+                conn = connect()
+                try:
+                    telemetry.store_plans(conn, reports, log)
+                finally:
+                    conn.close()
+            except Exception as ex:  # noqa: BLE001 - the database is away: at the next step
+                log(f"telemetry: state not written: {type(ex).__name__}: {str(ex)[:200]}")
+                return n
         work.mkdir(parents=True, exist_ok=True)
         state.write_text(sig)
     return n

@@ -97,7 +97,9 @@ def load_overview(conn) -> dict:
             best[r["ApplicationId"]] = (k, r["Title"])
     ready = load_a_patches(conn)
     running = load_running(conn)
+    plus = load_plus(conn)
     for a in apps:
+        a["Plus"] = a["ApplicationId"] in plus
         a["Components"] = len(by_app.get(a["ApplicationId"], []))
         a["ReadyNow"], a["PlanComponents"] = count_ready(by_app.get(a["ApplicationId"], []), state)
         a["ReadyStateful"] = sum(1 for c in by_app.get(a["ApplicationId"], [])
@@ -109,6 +111,22 @@ def load_overview(conn) -> dict:
         a["APatch"] = ready.get(a["ApplicationId"])
         a["Running"] = running.get(a["ApplicationId"])
     return {"apps": apps, "unmapped": {r["Kind"]: r["N"] for r in unmapped}}
+
+
+def load_plus(conn) -> set:
+    """The applications that are A+ (telemetry.is_plus: rated A, OpenTelemetry on, their telemetry arrives). None on
+    a database from before schema 63."""
+    from .telemetry import is_plus
+    try:
+        rows = _rows(conn, "SELECT ApplicationId, Rating, TelemetryState FROM cz.vApplicationLatest WHERE Telemetry = 1")
+    except Exception:  # noqa: BLE001
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return set()
+    return {r["ApplicationId"] for r in rows
+            if r.get("TelemetryState") and is_plus(r.get("Rating"), True, r["TelemetryState"])}
 
 
 RUNNING = ("healthy", "scheduled")      # a component the latest sandbox check found running (or a job waiting to run)
@@ -732,8 +750,16 @@ def _confidence(c) -> str:
     return "High" if c >= 0.8 else "Medium" if c >= 0.5 else "Low"
 
 
-def badge(r: str, big: bool = False) -> str:
+PLUS_TITLE = "Container-ready, and its OpenTelemetry telemetry is collected"
+PLUS_TEXT = ("Modern stack, containers with configuration only, no code changes; instrumented with OpenTelemetry, "
+             "and its traces, metrics and logs arrive")
+
+
+def badge(r: str, big: bool = False, plus: bool = False) -> str:
+    """The rating's badge; `plus`: an A application whose telemetry is collected (Make it A+, telemetry.py)."""
     r = r if r in RATINGS else "E"
+    if plus and r == "A":
+        return f"<span class='badge rA plus{' big' if big else ''}' title='{e(PLUS_TITLE)}'>A+</span>"
     return f"<span class='badge r{r}{' big' if big else ''}' title='{e(RATING_TITLE[r])}'>{r}</span>"
 
 
@@ -887,9 +913,11 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
         return f"{round(100 * n / total)}%" if total else "-"
     patched = [a for a in apps if a.get("APatch") and a.get("Rating") != "A"]
     in_sb = [a for a in patched if a["APatch"].get("SandboxStatus") in SANDBOX_HERE]
+    n_plus = sum(1 for a in apps if a.get("Plus") and a.get("Rating") == "A")
+    plus_sub = f"; {n_plus} of them A+ (telemetry collected)" if n_plus else ""
     tiles = (f"<div class='tile'><div class='label'>Applications assessed</div><div class='value'>{total}</div></div>"
              f"<div class='tile'><div class='label'>Ready now (A)</div><div class='value'>{c['A']}</div>"
-             f"<div class='sub'>{pct(c['A'])} of applications</div></div>"
+             f"<div class='sub'>{pct(c['A'])} of applications{plus_sub}</div></div>"
              f"<div class='tile'><div class='label'>Need code changes (B, D)</div><div class='value'>{c['B'] + c['D']}</div>"
              f"<div class='sub'>{pct(c['B'] + c['D'])}</div></div>"
              f"<div class='tile'><div class='label'>Partly or not feasible (C, E)</div><div class='value'>{c['C'] + c['E']}</div>"
@@ -933,7 +961,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
         body = []
         for (prod, pid), lst in sorted(products.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
             rows = "".join(
-                f"<tr><td>{badge(a['Rating'])}{_stateful_mark(a.get('AutoTags'))}{_a_patch_mark(a)}{_ready_mark(a)}</td>"
+                f"<tr><td>{badge(a['Rating'], plus=bool(a.get('Plus')))}{_stateful_mark(a.get('AutoTags'))}{_a_patch_mark(a)}{_ready_mark(a)}</td>"
                 f"<td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>{_tag_chips(a.get('Tags'))}"
                 f"<div class='muted small'>{e(RATING_TITLE.get(a['Rating'], ''))}: {e(RATING_TEXT.get(a['Rating'], ''))}</div></td>"
                 f"<td class='num'>{int(a['Score'])}</td>"
@@ -1066,6 +1094,8 @@ def _in_sandbox(app: dict) -> str:
 
 def render_application(app: dict, nav: str = "", refactor: dict | None = None) -> str:
     r = app["Rating"]
+    from .telemetry import is_plus
+    plus = is_plus(r, app.get("Telemetry"), app.get("TelemetryState"))
     refactor = dict(refactor or {})
     refactor.update(orders=app.get("refactors") or [], speed=app.get("llm_speed"),
                     paths={int(c["ComponentId"]): c.get("ProjectPath") for c in app.get("components") or []})
@@ -1136,8 +1166,8 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                      ("Business unit owner", app.get("BusinessUnitOwner"))) if v)
     return page(app["ApplicationName"], f"""{_nav(nav)}
 <p class='crumbs'>{crumbs}</p>{_admin_links_html(refactor.get("admin_links"))}
-<header class='app'>{badge(r, True)}{_stateful_mark(app_auto_tags(app))}<div><h1>{e(app['ApplicationName'])}</h1>
-<p class='lead'><b>{e(RATING_TITLE.get(r, ''))}</b>: {e(RATING_TEXT.get(r, ''))}</p>
+<header class='app'>{badge(r, True, plus)}{_stateful_mark(app_auto_tags(app))}<div><h1>{e(app['ApplicationName'])}</h1>
+<p class='lead'><b>{e(PLUS_TITLE if plus else RATING_TITLE.get(r, ''))}</b>: {e(PLUS_TEXT if plus else RATING_TEXT.get(r, ''))}</p>
 {f"<p>{e(app['Description'])}</p>" if app.get('Description') else ''}<p>{e(app['Summary'])}</p>{rating_why(app)[0]}{_verify_failed_note(app)}{_in_sandbox(app)}{_lab_needs(app, refactor)}</div></header>
 <div class='tiles'>
 <div class='tile'><div class='label'>Readiness</div><div class='value'>{int(app['Score'])}<span class='unit'>/100</span></div></div>
@@ -1147,6 +1177,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 </div>
 <div class='meta'>{owner}{src}</div>
 {_tags_section(app, refactor)}
+{_telemetry(app, refactor)}
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
 {_migration_plan(app, refactor)}
 <h2 id='components'>Components</h2>
@@ -1204,6 +1235,16 @@ def _tags_section(app: dict, ctx: dict | None) -> str:
                 f"placeholder='e.g. customer-facing, pci, wave 1'> <button class='secondary'>Save tags</button></form>")
     return (f"<div id='tags' class='tags-row'>{notice_html(ctx.get('tags_notice') or '')}"
             f"<span class='label'>Tags</span>{shown}{form}</div>")
+
+
+def _telemetry(app: dict, ctx: dict | None) -> str:
+    """Make it A+ and the state of the application's OpenTelemetry (admin_telemetry.py)."""
+    from .admin_telemetry import section
+    try:
+        return section(app, ctx or {})
+    except Exception as ex:  # noqa: BLE001 - one section must not take the page down
+        print(f"telemetry section of {app.get('ApplicationId')}: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return ""
 
 
 def _connectivity(app: dict, ctx: dict | None) -> str:
@@ -1534,7 +1575,7 @@ h2{font-size:20px;margin:32px 0 8px}h3{font-size:16px;margin:20px 0 6px}h3 .smal
 .legend{list-style:none;padding:0;margin:6px 0;display:flex;flex-wrap:wrap;gap:4px 18px;font-size:13px}
 .key{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:baseline}
 .badge{display:inline-block;width:28px;height:28px;line-height:28px;text-align:center;border-radius:6px;font-weight:700;color:#fff}
-.badge.rB,.badge.rC{color:#0b0b0b}.badge.big{width:64px;height:64px;line-height:64px;font-size:34px;border-radius:12px;flex:none}
+.badge.rB,.badge.rC{color:#0b0b0b}.badge.plus{width:auto;min-width:28px;padding:0 5px;letter-spacing:-.5px}.badge.plus.big{min-width:64px;padding:0 8px}.badge.big{width:64px;height:64px;line-height:64px;font-size:34px;border-radius:12px;flex:none}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}.chip{border:1px solid var(--line);border-radius:999px;padding:4px 12px;
 text-decoration:none;color:var(--fg);background:var(--card)}.chip.on{border-color:var(--fg);font-weight:600}
 section.bu{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px 18px 14px;margin:18px 0}
@@ -1880,6 +1921,10 @@ def make_handler(connect, admin=None):
                                 ctx["verify_logs"] = available(admin, app)       # the failed builds' whole logs
                                 ctx["scan_csrf"] = admin._csrf(s)
                             ctx["lab_admin"] = bool(s and s.admin)              # may turn lab services on
+                            if s and s.admin:                                   # may order Make it A+ (admin_telemetry.py)
+                                ctx["telemetry_csrf"] = admin._csrf(s)
+                            ctx["telemetry_notice"] = parse_qs(u.query).get("telemetry", [""])[0]
+                            ctx["grafana"] = (getattr(admin, "grafana_url", "") or "") if s and (s.admin or s.operator) else ""
                             ctx["lab_mail"] = bool(s and (s.admin or s.operator) and getattr(admin, "system", None))
                             ctx["scan_notice"] = parse_qs(u.query).get("scanagain", [""])[0]
                             if s and (s.admin or s.operator or s.scopes):

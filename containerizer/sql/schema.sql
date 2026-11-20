@@ -125,6 +125,13 @@ IF COL_LENGTH(N'[${schema}].Application', N'SandboxDebug') IS NULL
     ALTER TABLE [${schema}].Application ADD SandboxDebug bit NOT NULL
         CONSTRAINT DF_Application_SandboxDebug DEFAULT 0;
 GO
+-- 63: Make it A+ (telemetry.py, docs/telemetry.md): an administrator turns OpenTelemetry on for an application rated
+-- A; the queue runner injects the auto-instrumentation into its sandbox copy and records in TelemetryState (JSON)
+-- what it instrumented and whether the application's telemetry arrives
+IF COL_LENGTH(N'[${schema}].Application', N'Telemetry') IS NULL
+    ALTER TABLE [${schema}].Application ADD Telemetry bit NOT NULL
+        CONSTRAINT DF_Application_Telemetry DEFAULT 0, TelemetryState nvarchar(max) NULL;
+GO
 
 -- A deployable part of an application (web site, service, worker, desktop client, ...), matched by
 -- its project file path inside the application. Created and mapped to its application by the scan.
@@ -801,7 +808,8 @@ SELECT a.ApplicationId,
        p.ProductId, p.Name AS ProductName, p.Owner AS ProductOwner, p.InfoUrl AS ProductInfoUrl,
        bu.BusinessUnitId, bu.Name AS BusinessUnitName, bu.Owner AS BusinessUnitOwner,
        x.AssessmentId, x.AssessedAt, x.Rating, r.Title AS RatingTitle, r.Description AS RatingDescription,
-       x.Score, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch, a.Tags
+       x.Score, x.Confidence, x.Summary, x.Verified, x.SourceCommit, x.SourceBranch, a.Tags,
+       a.Telemetry, a.TelemetryState
 FROM [${schema}].Application a
 CROSS APPLY (SELECT TOP (1) * FROM [${schema}].ApplicationAssessment aa
              WHERE aa.ApplicationId = a.ApplicationId
@@ -3571,4 +3579,39 @@ BEGIN
 END;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 62) INSERT [${schema}].SchemaVersion (Version) VALUES (62);
+GO
+
+-- 63: Make it A+ (Application.Telemetry and TelemetryState, above next to the table; telemetry.py). Administrators
+-- turn it on and off (and clear the state with it); the queue runner writes the state. The change history records
+-- the switch, not the state.
+GRANT UPDATE ON [${schema}].Application (Telemetry, TelemetryState) TO [${schema}_admin];
+GRANT UPDATE ON [${schema}].Application (TelemetryState) TO [${schema}_writer];
+GO
+-- (with Telemetry: 63)
+CREATE OR ALTER TRIGGER [${schema}].trApplicationAudit ON [${schema}].Application
+AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT [${schema}].AuditLog (ChangedBy, ChangedByName, Via, TableName, RowId, RowName, Action, OldValues, NewValues)
+    SELECT w.ChangedBy, w.ChangedByName, w.Via, N'Application', COALESCE(i.ApplicationId, d.ApplicationId),
+           COALESCE(i.DisplayName, i.Name, d.DisplayName, d.Name),
+           CASE WHEN d.ApplicationId IS NULL THEN N'insert' WHEN i.ApplicationId IS NULL THEN N'delete' ELSE N'update' END,
+           CASE WHEN d.ApplicationId IS NOT NULL THEN (SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled,
+                d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode, d.SandboxDebug, d.ExternalId, d.Telemetry,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = d.ProductId) AS Product
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END,
+           CASE WHEN i.ApplicationId IS NOT NULL THEN (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled,
+                i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode, i.SandboxDebug, i.ExternalId, i.Telemetry,
+                (SELECT p.Name FROM [${schema}].Product p WHERE p.ProductId = i.ProductId) AS Product
+                FOR JSON PATH, WITHOUT_ARRAY_WRAPPER, INCLUDE_NULL_VALUES) END
+    FROM inserted i FULL OUTER JOIN deleted d ON d.ApplicationId = i.ApplicationId
+    CROSS JOIN [${schema}].fnAuditWho() w
+    WHERE d.ApplicationId IS NULL OR i.ApplicationId IS NULL
+       OR EXISTS (SELECT i.Name, i.DisplayName, i.Description, i.Owner, i.Retired, i.SandboxEnabled, i.ProductId,
+                         i.OutputRepo, i.OutputBranch, i.OutputPath, i.Tags, i.DeployMode, i.SandboxDebug, i.ExternalId, i.Telemetry
+                  EXCEPT SELECT d.Name, d.DisplayName, d.Description, d.Owner, d.Retired, d.SandboxEnabled, d.ProductId,
+                         d.OutputRepo, d.OutputBranch, d.OutputPath, d.Tags, d.DeployMode, d.SandboxDebug, d.ExternalId, d.Telemetry);
+END;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 63) INSERT [${schema}].SchemaVersion (Version) VALUES (63);
 GO
