@@ -110,7 +110,9 @@ The appliance's sandbox cluster runs what receives the telemetry, in the namespa
 Grafana (`https://<appliance>/grafana/`) has the data sources **Tempo** and **Loki** next to Prometheus, and the
 dashboard **Containerizer: application telemetry**: which applications and services send, their request rate,
 errors and duration, the latest traces and the logs. A trace opens with its spans, a span links to its log lines,
-and a log line with a trace links back. **Open its telemetry in Grafana** on the application's results page opens
+and a log line with a trace links back. **HTTP status (traces)** at the top keeps the traces with a span that
+answered with that status: a class (2xx, 3xx, 4xx, 5xx, 4xx and 5xx) or one of the common codes (404, 500, ...);
+a row of *Recent traces* opens to the matching spans with their status. **Open its telemetry in Grafana** on the application's results page opens
 the dashboard for that application.
 
 ![Grafana: the application telemetry dashboard](images/grafana-telemetry-dashboard.png#only-light)
