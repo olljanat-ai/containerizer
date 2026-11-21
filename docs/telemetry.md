@@ -10,7 +10,9 @@ logs arrive at the sandbox's collector, and Grafana shows them. **Make it A+** g
 code change, without the LLM and without a build.
 
 A+ is shown in place of A (the front page, the application's results page); it is not a sixth rating. The rules
-still rate the application A, the trends count it as A, and an application that stops rating A is no longer A+.
+still rate the application A, and an application that stops rating A is no longer A+. The
+[trends page](index.md) counts it within A and shows how many of the A are A+: an application that is A+ now
+counts as A+ from the day its telemetry first arrived.
 
 ![The results page of an A+ application: the badge, and the OpenTelemetry box with its instrumented component](images/results-make-it-a-plus.png#only-light){ .cz-shot }
 ![The results page of an A+ application: the badge, and the OpenTelemetry box with its instrumented component](images/results-make-it-a-plus-dark.png#only-dark){ .cz-shot }
@@ -112,8 +114,13 @@ dashboard **Containerizer: application telemetry**: which applications and servi
 errors and duration, the latest traces and the logs. A trace opens with its spans, a span links to its log lines,
 and a log line with a trace links back. **HTTP status (traces)** at the top keeps the traces with a span that
 answered with that status: a class (2xx, 3xx, 4xx, 5xx, 4xx and 5xx) or one of the common codes (404, 500, ...);
-a row of *Recent traces* opens to the matching spans with their status. **Open its telemetry in Grafana** on the application's results page opens
-the dashboard for that application.
+a row of *Recent traces* opens to the matching spans with their status. The rows are *Who sends telemetry*, *Traces and logs* and *Requests (from the
+traces)*.
+
+Every application's results page has a **Grafana** line with links that set the dashboards' filters to that
+application: **its pods in the sandbox** (the k3s dashboard, for its namespaces) and, with OpenTelemetry on, **its
+traces, metrics and logs** (this dashboard, for its namespace). Everyone sees the links when Grafana is read
+without sign-in ([the appliance's default](appliance-admin.md#metrics)), else administrators and operators.
 
 ![Grafana: the application telemetry dashboard](images/grafana-telemetry-dashboard.png#only-light)
 ![Grafana: the application telemetry dashboard](images/grafana-telemetry-dashboard-dark.png#only-dark)

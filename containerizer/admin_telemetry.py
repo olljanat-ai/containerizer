@@ -19,6 +19,7 @@ from . import telemetry
 
 BASE = "/admin/telemetry"
 DASHBOARD = "d/containerizer-telemetry/containerizer-application-telemetry"
+K3S_DASHBOARD = "d/containerizer-k3s/containerizer-k3s-sandbox-cluster"
 NOTICES = {
     "on": ("ok", "Make it A+ ordered: the queue runner instruments the application in the sandbox within a few "
                  "minutes, and its pods restart. It is A+ once its telemetry arrives."),
@@ -45,11 +46,36 @@ def _when(iso) -> str:
     return e(str(iso or "")[:16].replace("T", " ") + " UTC") if iso else ""
 
 
+def grafana_base(url: str) -> str:
+    """Grafana's own address from CONTAINERIZER_GRAFANA_URL, which may name a dashboard (.../grafana/d/<uid>)."""
+    return (url or "").split("/d/")[0].rstrip("/")
+
+
+def _dashboard(grafana: str, dashboard: str, namespaces: list[str], text: str) -> str:
+    q = "&".join(f"var-namespace={quote(n)}" for n in namespaces)
+    return (f"<a href='{e(grafana_base(grafana) + '/' + dashboard + '?' + q)}' rel='noopener noreferrer' target='_blank'>"
+            f"{e(text)} ↗</a>")
+
+
 def grafana_link(grafana: str, namespace: str) -> str:
     if not grafana or not namespace:
         return ""
-    return (f"<a href='{e(grafana.rstrip('/'))}/{DASHBOARD}?var-namespace={quote(namespace)}' rel='noopener noreferrer' "
-            f"target='_blank'>Open its telemetry in Grafana ↗</a>")
+    return _dashboard(grafana, DASHBOARD, [namespace], "Open its telemetry in Grafana")
+
+
+def grafana_links(app: dict, grafana: str) -> str:
+    """The application's own view of Grafana's dashboards, for its results page: its pods in the sandbox (the k3s
+    dashboard, for its namespaces) and, with OpenTelemetry on, its telemetry. Nothing without a namespace there."""
+    if not grafana:
+        return ""
+    st = telemetry.parse_state(app.get("TelemetryState")) if app.get("Telemetry") else {}
+    spaces = sorted({str(s["Namespace"]) for s in app.get("sandbox") or [] if s.get("Namespace")})
+    links = []
+    if spaces:
+        links.append(_dashboard(grafana, K3S_DASHBOARD, spaces, "its pods in the sandbox"))
+    if st.get("namespace"):
+        links.append(_dashboard(grafana, DASHBOARD, [str(st["namespace"])], "its traces, metrics and logs"))
+    return f"<div><span class='label'>Grafana</span> {' · '.join(links)}</div>" if links else ""
 
 
 def state_html(st: dict, plus: bool) -> str:

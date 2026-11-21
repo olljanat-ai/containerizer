@@ -556,6 +556,95 @@
     },
     {
       "type": "row",
+      "id": 12,
+      "title": "Traces and logs",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "panels": []
+    },
+    {
+      "type": "table",
+      "id": 13,
+      "title": "Recent traces",
+      "description": "The latest traces of the chosen applications, from Tempo. HTTP status (above) keeps the traces with a span that answered with that status: a class (4xx, 5xx) or one code. Open a row to see the matching spans with their status; open the trace to see all its spans, and from a span its log lines.",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "{resource.k8s.namespace.name=~\"$namespace\" && resource.service.name=~\"$service\" && ${status:raw}} | select(span.http.response.status_code, span.http.status_code)",
+          "limit": 30,
+          "tableType": "traces",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        }
+      }
+    },
+    {
+      "type": "logs",
+      "id": 14,
+      "title": "Logs",
+      "description": "What the chosen services log through OpenTelemetry, from Loki. A line with a trace links to it.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{k8s_namespace_name=~\"$namespace\", service_name=~\"$service\"}",
+          "queryType": "range",
+          "maxLines": 500,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false
+      }
+    },
+    {
+      "type": "row",
       "id": 7,
       "title": "Requests (from the traces)",
       "collapsed": false,
@@ -563,7 +652,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 12
+        "y": 35
       },
       "panels": []
     },
@@ -580,7 +669,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 13
+        "y": 36
       },
       "targets": [
         {
@@ -634,7 +723,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 13
+        "y": 36
       },
       "targets": [
         {
@@ -688,7 +777,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 21
+        "y": 44
       },
       "targets": [
         {
@@ -742,7 +831,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 21
+        "y": 44
       },
       "targets": [
         {
@@ -781,95 +870,6 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
-    },
-    {
-      "type": "row",
-      "id": 12,
-      "title": "Traces and logs",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 29
-      },
-      "panels": []
-    },
-    {
-      "type": "table",
-      "id": 13,
-      "title": "Recent traces",
-      "description": "The latest traces of the chosen applications, from Tempo. HTTP status (above) keeps the traces with a span that answered with that status: a class (4xx, 5xx) or one code. Open a row to see the matching spans with their status; open the trace to see all its spans, and from a span its log lines.",
-      "datasource": {
-        "type": "tempo",
-        "uid": "tempo"
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 30
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "tempo",
-            "uid": "tempo"
-          },
-          "queryType": "traceql",
-          "query": "{resource.k8s.namespace.name=~\"$namespace\" && resource.service.name=~\"$service\" && ${status:raw}} | select(span.http.response.status_code, span.http.status_code)",
-          "limit": 30,
-          "tableType": "traces",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm",
-        "footer": {
-          "show": false
-        }
-      }
-    },
-    {
-      "type": "logs",
-      "id": 14,
-      "title": "Logs",
-      "description": "What the chosen services log through OpenTelemetry, from Loki. A line with a trace links to it.",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 24,
-        "x": 0,
-        "y": 40
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{k8s_namespace_name=~\"$namespace\", service_name=~\"$service\"}",
-          "queryType": "range",
-          "maxLines": 500,
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "showTime": true,
-        "wrapLogMessage": true,
-        "enableLogDetails": true,
-        "sortOrder": "Descending",
-        "dedupStrategy": "none",
-        "prettifyLogMessage": false
       }
     }
   ]

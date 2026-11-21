@@ -113,6 +113,23 @@ if [ -n "$sso" ]; then
   done
 fi
 echo "CONTAINERIZER_GRAFANA_URL=https://$host/grafana/d/containerizer-scans" >> /run/containerizer/web-url.env
+# Grafana is read without sign-in (its Viewer role: the dashboards, nothing to change) when the results pages are:
+# not when they need sign-in (CONTAINERIZER_VIEWERS or CONTAINERIZER_VIEWERS_REQUIRED in web.env). The results
+# pages then link to each application's dashboards for everyone. GF_AUTH_ANONYMOUS_ENABLED in grafana.env decides
+# instead when it is set there.
+web_val() { sed -nE "s/^$1=[\"']?([^\"']*)[\"']?[[:space:]]*\$/\1/p" "$C/web.env" 2>/dev/null | tail -n 1; }
+anon=$(sed -nE "s/^GF_AUTH_ANONYMOUS_ENABLED=[\"']?([A-Za-z]*).*/\1/p" "$C/grafana.env" 2>/dev/null | tail -n 1 | tr '[:upper:]' '[:lower:]')
+if [ -z "$anon" ]; then
+  anon=true
+  [ -z "$(web_val CONTAINERIZER_VIEWERS)" ] || anon=false
+  case "$(web_val CONTAINERIZER_VIEWERS_REQUIRED | tr '[:upper:]' '[:lower:]')" in true|yes|1|on) anon=false;; esac
+  {
+    echo "GF_AUTH_ANONYMOUS_ENABLED=$anon"
+    echo "GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer"
+    echo "GF_AUTH_ANONYMOUS_HIDE_VERSION=true"
+  } >> /run/containerizer/grafana-url.env
+fi
+if [ "$anon" = true ]; then echo "CONTAINERIZER_GRAFANA_PUBLIC=true" >> /run/containerizer/web-url.env; fi
 echo "CONTAINERIZER_OPENBAO_URL=https://$host/ui/" >> /run/containerizer/web-url.env
 # asked whether OpenBao has OIDC sign-in: the Secrets link then opens it (docs/openbao.md)
 echo "CONTAINERIZER_OPENBAO_API=http://127.0.0.1:8200" >> /run/containerizer/web-url.env

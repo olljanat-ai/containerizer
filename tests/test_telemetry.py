@@ -336,6 +336,19 @@ def test_the_results_page_box():
     assert "st-ok'>A+</span>" in on and "Shop.Web" in on and "agent injected" in on and "Turn it off" in on
     assert ("href='https://cz.example/grafana/d/containerizer-telemetry/containerizer-application-telemetry"
             "?var-namespace=shop'") in on
+    # the address may name a dashboard (the appliance's CONTAINERIZER_GRAFANA_URL does)
+    assert at.grafana_link("https://cz.example/grafana/d/containerizer-scans", "shop").startswith(
+        "<a href='https://cz.example/grafana/d/containerizer-telemetry/")
+    # the line of every application's page: its pods (each namespace), and its telemetry when that is on
+    sandbox = [{"Namespace": "shop"}, {"Namespace": "shop-jobs"}, {"Namespace": "shop"}, {"Namespace": None}]
+    links = at.grafana_links({**app, "sandbox": sandbox}, "https://cz.example/grafana/d/containerizer-scans")
+    assert ("href='https://cz.example/grafana/d/containerizer-k3s/containerizer-k3s-sandbox-cluster"
+            "?var-namespace=shop&amp;var-namespace=shop-jobs'") in links and "containerizer-telemetry" not in links
+    both = at.grafana_links({**app, "sandbox": sandbox, "Telemetry": True, "TelemetryState": json.dumps(st)},
+                            "https://cz.example/grafana")
+    assert "containerizer-k3s" in both and "containerizer-application-telemetry?var-namespace=shop'" in both
+    assert at.grafana_links({**app, "sandbox": sandbox}, "") == "" and at.grafana_links({**app, "sandbox": []}, "x") == ""
+    assert st["plus_at"] == st["seen_at"]                   # since when it is A+ (the trends page)
     waiting = at.section({**app, "Telemetry": True, "TelemetryState": None}, {})
     assert "Ordered" in waiting and "Turn it off" not in waiting
     assert at.notice_html("on") and at.notice_html("nope") == ""
@@ -489,3 +502,12 @@ def test_the_switch_and_the_state_in_sql_server():
         adm.close()
     finally:
         pass
+
+
+def test_grafana_links_for_everyone_only_when_grafana_is_open():
+    from containerizer import webui
+    env = {"CONTAINERIZER_GRAFANA_URL": "https://cz.example/grafana/d/containerizer-scans"}
+    assert webui.public_grafana(env) == "" and webui.public_grafana() == ""
+    assert webui.public_grafana({**env, "CONTAINERIZER_GRAFANA_PUBLIC": "true"}) == env["CONTAINERIZER_GRAFANA_URL"]
+    assert webui.public_grafana({"CONTAINERIZER_GRAFANA_PUBLIC": "true"}) == ""
+    assert webui.public_grafana({"CONTAINERIZER_GRAFANA_URL": "javascript:alert(1)", "CONTAINERIZER_GRAFANA_PUBLIC": "1"}) == ""

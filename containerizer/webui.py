@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import sys
 from collections import Counter
@@ -1175,7 +1176,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
 <div class='sub'>{_confidence_source(app)}</div></div>
 <div class='tile'><div class='label'>Last assessed</div><div class='value small-value'>{_date(app['AssessedAt'])}</div></div>
 </div>
-<div class='meta'>{owner}{src}</div>
+<div class='meta'>{owner}{src}{_grafana_links(app, refactor)}</div>
 {_tags_section(app, refactor)}
 {_telemetry(app, refactor)}
 {f"<h2>Main obstacles</h2><ul class='obstacles'>{obs_html}</ul>" if obs_html else ''}
@@ -1235,6 +1236,26 @@ def _tags_section(app: dict, ctx: dict | None) -> str:
                 f"placeholder='e.g. customer-facing, pci, wave 1'> <button class='secondary'>Save tags</button></form>")
     return (f"<div id='tags' class='tags-row'>{notice_html(ctx.get('tags_notice') or '')}"
             f"<span class='label'>Tags</span>{shown}{form}</div>")
+
+
+def public_grafana(env=None) -> str:
+    """Grafana's address when everyone may have its links: CONTAINERIZER_GRAFANA_PUBLIC says that it is read without
+    sign-in (the appliance, unless the results pages need sign-in). With or without sign-in for the admin pages."""
+    env = os.environ if env is None else env
+    url = (env.get("CONTAINERIZER_GRAFANA_URL") or "").strip()
+    if (env.get("CONTAINERIZER_GRAFANA_PUBLIC") or "").strip().lower() not in ("1", "true", "yes", "on"):
+        return ""
+    from .admin import LINK_RE
+    return url if LINK_RE.fullmatch(url) else ""
+
+
+def _grafana_links(app: dict, ctx: dict | None) -> str:
+    from .admin_telemetry import grafana_links
+    try:
+        return grafana_links(app, (ctx or {}).get("grafana") or "")
+    except Exception as ex:  # noqa: BLE001 - one line must not take the page down
+        print(f"Grafana links of {app.get('ApplicationId')}: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return ""
 
 
 def _telemetry(app: dict, ctx: dict | None) -> str:
@@ -1628,6 +1649,8 @@ font-size:11px;font-weight:700;border-radius:4px;color:#fff}.cell.rB,.cell.rC{co
 .cell.none{background:var(--line);opacity:.5}
 .cell.patched{outline:2px dashed var(--fg);outline-offset:-2px}
 .key.patched{outline:2px dashed var(--fg);outline-offset:-2px}
+.cell.plus,.key.plus{background:color-mix(in srgb,var(--rA) 50%,#000)}.cell.plus{font-size:11px;letter-spacing:-.5px}
+.chart .fplus{fill:color-mix(in srgb,var(--rA) 50%,#000)}
 .chart .fpatch{fill:var(--card);fill-opacity:.45;stroke:var(--fg);stroke-width:1.5;stroke-dasharray:3 2}
 .good{color:#006300;font-weight:600}.bad{color:#b42727;font-weight:600}
 @media (prefers-color-scheme:dark){.good{color:#4fd14f}.bad{color:#f07a7a}}
@@ -1890,7 +1913,8 @@ def make_handler(connect, admin=None):
                     conn = connect()
                     try:
                         data = trends.compute(trends.load_history(conn, since), now, since,
-                                              trends.load_patches(conn) if with_patches else None)
+                                              trends.load_patches(conn) if with_patches else None,
+                                              trends.load_plus(conn))
                     finally:
                         conn.close()
                     return self._send(200, trends.render_trends(data, rng, bu, product, nav), head=head, forms=bool(nav))
@@ -1924,7 +1948,10 @@ def make_handler(connect, admin=None):
                             if s and s.admin:                                   # may order Make it A+ (admin_telemetry.py)
                                 ctx["telemetry_csrf"] = admin._csrf(s)
                             ctx["telemetry_notice"] = parse_qs(u.query).get("telemetry", [""])[0]
-                            ctx["grafana"] = (getattr(admin, "grafana_url", "") or "") if s and (s.admin or s.operator) else ""
+                            # Grafana's links: for everyone when Grafana is open to read (the appliance, unless the
+                            # results pages need sign-in), else for those who have its link on the admin pages
+                            ctx["grafana"] = public_grafana() or (
+                                (getattr(admin, "grafana_url", "") or "") if s and (s.admin or s.operator) else "")
                             ctx["lab_mail"] = bool(s and (s.admin or s.operator) and getattr(admin, "system", None))
                             ctx["scan_notice"] = parse_qs(u.query).get("scanagain", [""])[0]
                             if s and (s.admin or s.operator or s.scopes):
