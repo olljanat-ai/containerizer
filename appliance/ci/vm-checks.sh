@@ -85,6 +85,14 @@ for d in containerizer-k3s containerizer-flux containerizer-telemetry; do
   curl -fsS "http://127.0.0.1:3000/grafana/api/dashboards/uid/$d" -u "admin:$(cat /etc/containerizer/secrets/grafana-admin)" >/dev/null \
     || { echo "Grafana has no dashboard $d" >&2; exit 1; }
 done
+# Grafana is read without sign-in (the results pages are: no CONTAINERIZER_VIEWERS), and only read
+grep -q '^GF_AUTH_ANONYMOUS_ENABLED=true$' /run/containerizer/grafana-url.env
+grep -q '^CONTAINERIZER_GRAFANA_PUBLIC=true$' /run/containerizer/web-url.env
+curl -fsS "http://127.0.0.1:3000/grafana/api/dashboards/uid/containerizer-telemetry" >/dev/null \
+  || { echo "Grafana does not show a dashboard without sign-in" >&2; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"dashboard":{"title":"x"}}' http://127.0.0.1:3000/grafana/api/dashboards/db)
+[ "$code" = 403 ] || { echo "Grafana without sign-in can write: HTTP $code" >&2; exit 1; }
 wait_for 600 "CoreDNS resolves through the filter" k3s kubectl -n kube-system wait --for=condition=Available deploy/coredns --timeout=10s
 
 step "secret store: External Secrets Operator, per-namespace access"

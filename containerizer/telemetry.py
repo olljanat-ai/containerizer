@@ -341,7 +341,7 @@ def new_state(namespace: str, plans: list[dict], old: dict | None = None) -> dic
     if [(c.get("folder"), c.get("mode"), c.get("runtime")) for c in old.get("components") or []] != \
             [(c.get("folder"), c.get("mode"), c.get("runtime")) for c in comps]:
         st["applied_at"] = _now()
-    for k in ("seen_at", "checked_at", "check"):
+    for k in ("seen_at", "checked_at", "check", "plus_at"):
         if old.get(k):
             st[k] = old[k]
     return with_seen(st, None)
@@ -369,6 +369,8 @@ def with_seen(state: dict, seen: set | None, now: str | None = None) -> dict:
         elif st.get("seen_at"):
             base = SILENT
     st["status"] = base
+    if base == RECEIVING and not st.get("plus_at"):
+        st["plus_at"] = st.get("seen_at") or now or _now()      # since when it is A+ (the trends page)
     return st
 
 

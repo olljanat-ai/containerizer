@@ -216,3 +216,30 @@ def test_every_labelled_column_shows_its_total():
     totals = [sum(c.values()) for c in f["dist"]]
     shown = [int(v.replace(",", "")) for v in re.findall(r"<text class='val'[^>]*>([\d,]+)</text>", svg)]
     assert shown == [t for t in totals if t] and len(shown) > 1
+
+
+def test_a_plus_counts_within_a_from_the_day_its_telemetry_arrived():
+    """billing rates A from September and is A+ now, since 20 October: A+ in October only; <ledger> rated A in
+    spring but is E now, so it is A+ nowhere (load_plus lists only what is A+ now)."""
+    d = trends.compute(history(), NOW, None, None, {1: datetime(2026, 10, 20)})
+    assert d["plus"][8:] == [0, 1] and sum(d["plus"]) == 1 and d["dist"][9]["A"] == 1
+    billing = next(a for a in d["apps"] if a["ApplicationName"] == "billing")
+    assert billing["plus"] and billing["states"][9]["Plus"] and "Plus" not in billing["states"][8]
+    html = trends.render_trends(d)
+    assert "A+ (of the A: OpenTelemetry collected)" in html and "of A: A+" in html and ">A+</span>" in html and "class='fplus'" in html
+    assert "A+" not in trends.render_trends(trends.compute(history(), NOW, None))      # nothing is A+: nothing said
+
+    class Conn:
+        def cursor(self, as_dict=False):
+            return self
+
+        def execute(self, sql, *a):
+            pass
+
+        def fetchall(self):
+            return [{"ApplicationId": 1, "Rating": "A", "TelemetryState": '{"status": "receiving", '
+                     '"applied_at": "2026-10-01T08:00:00Z", "plus_at": "2026-10-20T09:30:00Z"}'},
+                    {"ApplicationId": 2, "Rating": "A", "TelemetryState": '{"status": "waiting", "check": "prometheus"}'},
+                    {"ApplicationId": 3, "Rating": "A", "TelemetryState": '{"status": "receiving", '
+                     '"applied_at": "2026-10-02T08:00:00Z"}'}]
+    assert trends.load_plus(Conn()) == {1: datetime(2026, 10, 20, 9, 30), 3: datetime(2026, 10, 2, 8)}

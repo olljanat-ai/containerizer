@@ -10,7 +10,24 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
 
 ## 0.53.0 (2026-11-21)
 
-A minor release: it changes the OS image (a Grafana dashboard), so appliances get it as an OS upgrade.
+A minor release: it changes the OS image (Grafana's settings and a dashboard), so appliances get it as an OS
+upgrade.
+
+- **Grafana is read without sign-in when the results pages are.** On the appliance everyone who reaches it can open
+  the dashboards (Grafana's Viewer role: nothing can be changed, and its **Sign in** still takes administrators
+  in). When the results pages need sign-in (`CONTAINERIZER_VIEWERS`, or `CONTAINERIZER_VIEWERS_REQUIRED=true`),
+  Grafana does too, as before. `GF_AUTH_ANONYMOUS_ENABLED=false` in `grafana.env` turns it off
+  ([docs/appliance-admin.md](docs/appliance-admin.md#metrics)). **Note:** the dashboards include the sandbox
+  applications' logs and traces and the LLM usage and cost.
+- **Every application's results page links to its own Grafana views**: *its pods in the sandbox* (the k3s dashboard
+  for its namespaces) and, with OpenTelemetry on, *its traces, metrics and logs* (the telemetry dashboard for its
+  namespace). For everyone when Grafana is read without sign-in, else for administrators and operators.
+- **The trends page shows A+**: a tile, a column in the table and **A+** cells in each application's history. An
+  application that is A+ now counts as A+ (within A) from the day its telemetry first arrived. Working Make it A
+  patches are on the page as before (*With working Make it A patches*).
+- **Fixed: "Open its telemetry in Grafana" led to a page that does not exist on the appliance** (the link was
+  built on the address of the scans dashboard).
+- **The telemetry dashboard has *Traces and logs* right below *Who sends telemetry***, above the request charts.
 
 - **Grafana, application telemetry: the traces can be filtered by HTTP status.** The dashboard has the choice
   **HTTP status (traces)**: a class (2xx, 3xx, 4xx, 5xx, 4xx and 5xx) or one of the common codes (404, 500, ...).

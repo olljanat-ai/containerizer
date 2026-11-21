@@ -71,6 +71,41 @@ def load_patches(conn) -> dict[int, list[dict]]:
     return out
 
 
+def load_plus(conn) -> dict[int, datetime]:
+    """The applications that are A+ now (telemetry.is_plus), with since when: the day their telemetry first arrived
+    (the state's plus_at; before 0.53 the day they were instrumented)."""
+    from .telemetry import is_plus, parse_state
+    try:
+        cur = conn.cursor(as_dict=True)
+        cur.execute("SELECT ApplicationId, Rating, TelemetryState FROM cz.vApplicationLatest WHERE Telemetry = 1")
+        rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 - no telemetry before schema 63
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
+    out = {}
+    for r in rows:
+        st = parse_state(r.get("TelemetryState"))
+        if not is_plus(r.get("Rating"), True, st):
+            continue
+        try:
+            out[r["ApplicationId"]] = datetime.strptime(str(st.get("plus_at") or st.get("applied_at"))[:19],
+                                                        "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            pass
+    return out
+
+
+def with_plus(state: dict | None, since: datetime | None, end: datetime) -> dict | None:
+    """The state at a period's end of an application that is A+ now: A+ where the code itself rated A and its
+    telemetry had started to arrive by then."""
+    if state is None or since is None or state["Rating"] != "A" or state.get("Patched") or since >= end:
+        return state
+    return {**state, "Plus": True}
+
+
 def with_patch(state: dict | None, patches: list[dict], end: datetime) -> dict | None:
     """The state at a period's end as a working Make it A patch makes it: rated A, without obstacles, when a patch
     for the scanned commit had finished by then (a patch for older code no longer applies). Without the commit (an
@@ -138,10 +173,12 @@ def period_label(gran: str, start: datetime, short: bool = False) -> str:
     return f"{MONTHS[start.month - 1]} {start.day}" + ("" if short else f", {start.year}")
 
 
-def compute(rows: list[dict], now: datetime, since: datetime | None, patches: dict | None = None) -> dict:
+def compute(rows: list[dict], now: datetime, since: datetime | None, patches: dict | None = None,
+            plus: dict | None = None) -> dict:
     """The portfolio at the end of every period: rating mix, obstacles, each application's rating. With `patches`
     (load_patches), an application with a working Make it A patch for its scanned code counts as A from the
-    patch on (with_patch)."""
+    patch on (with_patch). `plus` (load_plus): the applications that are A+ now count as A+, within A, from the day
+    their telemetry arrived (with_plus)."""
     by_app: dict = {}
     for r in rows:
         by_app.setdefault(r["ApplicationId"], []).append(r)
@@ -160,7 +197,8 @@ def compute(rows: list[dict], now: datetime, since: datetime | None, patches: di
         for _start, end in ps:
             while i < len(lst) and lst[i]["AssessedAt"] < end:
                 last, i = lst[i], i + 1
-            states.append(with_patch(last, (patches or {}).get(app_id) or [], end) if patches is not None else last)
+            s = with_patch(last, (patches or {}).get(app_id) or [], end) if patches is not None else last
+            states.append(with_plus(s, (plus or {}).get(app_id), end))
         apps.append({"ApplicationId": app_id, "ApplicationName": cur["ApplicationName"],
                      "ProductId": cur["ProductId"], "ProductName": cur["ProductName"],
                      "BusinessUnitId": cur["BusinessUnitId"], "BusinessUnitName": cur["BusinessUnitName"],
@@ -172,19 +210,21 @@ def summarise(data: dict) -> dict:
     """Per-period totals of the (possibly filtered) applications."""
     n = len(data["periods"])
     dist = [Counter() for _ in range(n)]
-    patched = [0] * n
+    patched, plus = [0] * n, [0] * n
     obst = [{k: 0 for k, _, _ in OBSTACLES} for _ in range(n)]
     for a in data["apps"]:
         for i, s in enumerate(a["states"]):
             if s is not None:
                 dist[i][s["Rating"]] += 1
                 patched[i] += 1 if s.get("Patched") else 0
+                plus[i] += 1 if s.get("Plus") else 0
                 for k, _, _ in OBSTACLES:
                     obst[i][k] += int(s[k] or 0)
         known = [s for s in a["states"] if s is not None]
         a["from"] = known[0]["Rating"] if known else None
         a["to"] = known[-1]["Rating"] if known else None
-    return {**data, "dist": dist, "obstacles": obst, "patched": patched}
+        a["plus"] = bool(known and known[-1].get("Plus"))
+    return {**data, "dist": dist, "obstacles": obst, "patched": patched, "plus": plus}
 
 
 def filtered(data: dict, bu: str | None, product: str | None) -> dict:
@@ -260,7 +300,8 @@ def rating_columns(data: dict) -> str:
     for i, c in enumerate(data["dist"]):
         if not totals[i]:
             continue
-        summary = "; ".join(f"{r}: {c[r]}" for r in RATINGS if c[r])
+        pl = (data.get("plus") or [0] * len(totals))[i]
+        summary = "; ".join(f"{r}: {c[r]}" + (f", {pl} of them A+" if r == "A" and pl else "") for r in RATINGS if c[r])
         out.append(f"<g><rect class='hit' x='{x(i) - slot / 2:.1f}' y='{PAD_T}' width='{slot:.1f}' "
                    f"height='{H - PAD_T - PAD_B}'><title>{e(long[i])}: {totals[i]} applications ({summary})</title></rect>")
         base, parts = y(0), [r for r in RATINGS if c[r]]
@@ -282,6 +323,12 @@ def rating_columns(data: dict) -> str:
                 out.append(f"<rect class='fpatch' x='{x(i) - w / 2 + 1:.1f}' y='{py + 1:.1f}' width='{w - 2:.1f}' "
                            f"height='{max(ph - 2, 1.0):.1f}'><title>{e(long[i])}: {pn} of the {c[r]} A only with a "
                            f"working Make it A patch</title></rect>")
+            if r == "A" and pl:                     # the A+ of the A (with_plus): darker, from the segment's foot
+                bottom = top + (gap if j < len(parts) - 1 else 0.0) + seg_h
+                qh = max(min(y(0) - y(pl), seg_h), 3.0)
+                out.append(f"<rect class='fplus' x='{x(i) - w / 2:.1f}' y='{bottom - qh:.1f}' width='{w:.1f}' "
+                           f"height='{qh:.1f}'><title>{e(long[i])}: {pl} of the {c[r]} A are A+ "
+                           f"(their OpenTelemetry telemetry is collected)</title></rect>")
             base = top
         out.append("</g>")
     need = 8 * len(f"{max(totals, default=0):,}") + 8       # a total's width in viewBox units, and a gap
@@ -336,6 +383,9 @@ def strip(states: list, labels: list[str]) -> str:
         elif s.get("Patched"):
             cells.append(f"<span class='cell rA patched' title='{e(lab)}: A with a working Make it A patch "
                          f"(the code in the repository rates {e(s['Patched'])})'>A</span>")
+        elif s.get("Plus"):
+            cells.append(f"<span class='cell rA plus' title='{e(lab)}: A+ {e(RATING_TITLE['A'])}, and its OpenTelemetry "
+                         f"telemetry is collected'>A+</span>")
         else:
             r = s["Rating"]
             cells.append(f"<span class='cell r{r}' title='{e(lab)}: {r} {e(RATING_TITLE[r])}'>{r}</span>")
@@ -427,6 +477,9 @@ def render_trends(full: dict, rng: str = DEFAULT_RANGE, bu: str | None = None, p
              + (f"<div class='tile'><div class='label'>A only with a Make it A patch</div>"
                 f"<div class='value'>{data['patched'][l]:,}</div>{_delta(data['patched'][l], data['patched'][f], since, True)}"
                 f"</div>" if pt else "") +
+             (f"<div class='tile'><div class='label'>A+ (of the A: OpenTelemetry collected)</div>"
+              f"<div class='value'>{data['plus'][l]:,}</div>{_delta(data['plus'][l], data['plus'][f], since, True)}</div>"
+              if any(data["plus"]) else "") +
              f"<div class='tile'><div class='label'>Cannot run in a Linux container</div><div class='value'>{ob_l['Blockers']:,}</div>"
              f"{_delta(ob_l['Blockers'], ob_f['Blockers'], since, False)}</div>"
              f"<div class='tile'><div class='label'>Rating improved</div><div class='value'>{improved:,}</div>"
@@ -434,7 +487,9 @@ def render_trends(full: dict, rng: str = DEFAULT_RANGE, bu: str | None = None, p
              f"<div class='tile'><div class='label'>Rating got worse</div><div class='value'>{regressed:,}</div>"
              f"<div class='sub'>applications, since {e(since)}</div></div>")
 
+    has_plus = any(data["plus"])
     dist_rows = [[long[i]] + [data["dist"][i][r] for r in RATINGS] + ([data["patched"][i]] if pt else [])
+                 + ([data["plus"][i]] if has_plus else [])
                  + [sum(data["dist"][i].values())] for i in active]
     ob_rows = [[long[i]] + [data["obstacles"][i][k] for k, _, _ in OBSTACLES] for i in active]
 
@@ -451,7 +506,7 @@ def render_trends(full: dict, rng: str = DEFAULT_RANGE, bu: str | None = None, p
         rows.append(f"<tr><td><a href='/app/{int(a['ApplicationId'])}'>{e(a['ApplicationName'])}</a>"
                     f"<div class='muted small'>{e(a['BusinessUnitName'] or UNASSIGNED)} › {e(a['ProductName'] or UNASSIGNED)}</div></td>"
                     f"<td>{strip([a['states'][i] for i in shown], strip_labels)}</td>"
-                    f"<td class='nowrap'>{frm}{badge(a['to']) if a['to'] else ''}</td><td>{text}</td>"
+                    f"<td class='nowrap'>{frm}{badge(a['to'], False, a['plus']) if a['to'] else ''}</td><td>{text}</td>"
                     f"<td class='num'>{int(a['scans'])}</td></tr>")
     strip_note = (f"{period_label(gran, ps[shown[0]][0])} to {period_label(gran, ps[shown[-1]][0])}, one cell per {gran}"
                   if shown else "")
@@ -460,6 +515,10 @@ def render_trends(full: dict, rng: str = DEFAULT_RANGE, bu: str | None = None, p
                   "runs and rates A (made for the scanned commit) counts as A from the day the patch finished, without "
                   "obstacles; such cells have a dashed border. This measures what Make it A achieves before the "
                   "patches are merged." if pt else "")
+    plus_note = (" A+ is counted within A: an application that is A+ now counts as A+ from the day its OpenTelemetry "
+                 "telemetry first arrived, in the periods its code rated A; that part of the A is the darker green." if has_plus else "")
+    plus_key = ("<ul class='legend'><li><span class='key rA plus'></span><b>A+</b> of the A: OpenTelemetry telemetry "
+                "collected</li></ul>" if has_plus else "")
     patch_key = ("<ul class='legend'><li><span class='key rA patched'></span>A only with a working Make it A patch"
                  "</li></ul>" if pt else "")
     body = f"""{head}
@@ -467,9 +526,9 @@ def render_trends(full: dict, rng: str = DEFAULT_RANGE, bu: str | None = None, p
 <div class='tiles'>{tiles}</div>
 <section class='card'><h2>Applications by rating</h2>
 <p class='muted small'>Each column is the portfolio at the end of a {gran}: every application counts once, with the
-rating of its latest scan by then. Applications appear from their first scan.{patch_note}</p>
-{legend()}{patch_key}{rating_columns(data)}
-<details><summary>Show as a table</summary>{_table(['Period'] + RATINGS + (['of A: with a patch'] if pt else []) + ['Total'], dist_rows)}</details></section>
+rating of its latest scan by then. Applications appear from their first scan.{patch_note}{plus_note}</p>
+{legend()}{patch_key}{plus_key}{rating_columns(data)}
+<details><summary>Show as a table</summary>{_table(['Period'] + RATINGS + (['of A: with a patch'] if pt else []) + (['of A: A+'] if has_plus else []) + ['Total'], dist_rows)}</details></section>
 <section class='card'><h2>Obstacles</h2>
 <p class='muted small'>Distinct obstacles found by the latest scan of each application, added up. Fewer is better.</p>
 {line_legend()}{obstacle_lines(data)}

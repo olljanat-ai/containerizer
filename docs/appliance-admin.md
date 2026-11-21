@@ -327,6 +327,15 @@ Docker Hub, which the default firewall rules allow.
 
 ## Metrics
 
+**Who can read it.** Like the results pages: by default everyone who reaches the appliance opens the dashboards
+without sign-in (Grafana's Viewer role: they can change nothing; **Sign in** takes the `admin` account or your
+identity provider's users in). The dashboards include the sandbox applications' logs and traces and the LLM usage
+and cost. When the results pages need [sign-in](sign-in.md#sign-in-for-the-results-pages-optional)
+(`CONTAINERIZER_VIEWERS`, or `CONTAINERIZER_VIEWERS_REQUIRED=true` in `web.env`), Grafana needs it too.
+`GF_AUTH_ANONYMOUS_ENABLED=false` (or `true`) in `grafana.env` decides it by itself. Either takes effect at the
+next start of the appliance. The results page of every application links to its own views (see
+[A+ and OpenTelemetry](telemetry.md#grafana)).
+
 Grafana (`https://<appliance>/grafana/`, **Grafana ↗** on the admin pages) has six dashboards, in the
 **containerizer** folder (the dashboard list at the top of each links to the others):
 
