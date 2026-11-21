@@ -397,6 +397,15 @@ def test_the_appliance_collects_and_shows_what_the_rules_send_to():
     dash = json.loads((root / "monitoring/grafana/containerizer-telemetry.json").read_text())
     assert f"d/{dash['uid']}/" in at.DASHBOARD and "containerizer" in dash["tags"]
     assert {v["name"] for v in dash["templating"]["list"]} >= {"namespace", "service"}
+    # the traces by HTTP status: a choice of TraceQL conditions (both names of the attribute: the agents differ),
+    # none with the comma that separates the choices, and "All" that filters nothing
+    status = next(v for v in dash["templating"]["list"] if v["name"] == "status")
+    choices = dict(c.split(" : ") for c in status["query"].split(","))
+    assert choices["All"] == "true" and [o["value"] for o in status["options"]] == list(choices.values())
+    assert all("span.http.response.status_code" in v and "span.http.status_code" in v
+               for k, v in choices.items() if k != "All")
+    traces = next(p for p in dash["panels"] if p.get("datasource", {}).get("type") == "tempo")
+    assert "${status:raw}" in traces["targets"][0]["query"]
     ids = [p["id"] for p in dash["panels"]]
     assert len(ids) == len(set(ids))
     cells = set()

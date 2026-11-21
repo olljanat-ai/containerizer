@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.53.0 (2026-11-21)
+
+A minor release: it changes the OS image (a Grafana dashboard), so appliances get it as an OS upgrade.
+
+- **Grafana, application telemetry: the traces can be filtered by HTTP status.** The dashboard has the choice
+  **HTTP status (traces)**: a class (2xx, 3xx, 4xx, 5xx, 4xx and 5xx) or one of the common codes (404, 500, ...).
+  *Recent traces* then lists only the traces with a span that answered with that status, and a row opens to the
+  matching spans with their status ([docs/telemetry.md](docs/telemetry.md#grafana)).
+
 ## 0.52.0 (2026-11-20)
 
 A minor release: it changes the OS image (the sandbox's telemetry services, Prometheus and Grafana settings), so

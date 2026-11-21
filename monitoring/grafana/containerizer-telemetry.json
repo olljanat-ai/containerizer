@@ -118,6 +118,104 @@
         },
         "sort": 1,
         "regex": ""
+      },
+      {
+        "name": "status",
+        "label": "HTTP status (traces)",
+        "type": "custom",
+        "description": "Recent traces: only the traces with a span that answered with this HTTP status.",
+        "query": "All : true,2xx: success : ((span.http.response.status_code >= 200 && span.http.response.status_code < 300) || (span.http.status_code >= 200 && span.http.status_code < 300)),3xx: redirect : ((span.http.response.status_code >= 300 && span.http.response.status_code < 400) || (span.http.status_code >= 300 && span.http.status_code < 400)),4xx: client error : ((span.http.response.status_code >= 400 && span.http.response.status_code < 500) || (span.http.status_code >= 400 && span.http.status_code < 500)),5xx: server error : ((span.http.response.status_code >= 500 && span.http.response.status_code < 600) || (span.http.status_code >= 500 && span.http.status_code < 600)),4xx and 5xx : ((span.http.response.status_code >= 400 && span.http.response.status_code < 600) || (span.http.status_code >= 400 && span.http.status_code < 600)),400 : (span.http.response.status_code = 400 || span.http.status_code = 400),401 : (span.http.response.status_code = 401 || span.http.status_code = 401),403 : (span.http.response.status_code = 403 || span.http.status_code = 403),404 : (span.http.response.status_code = 404 || span.http.status_code = 404),409 : (span.http.response.status_code = 409 || span.http.status_code = 409),429 : (span.http.response.status_code = 429 || span.http.status_code = 429),500 : (span.http.response.status_code = 500 || span.http.status_code = 500),502 : (span.http.response.status_code = 502 || span.http.status_code = 502),503 : (span.http.response.status_code = 503 || span.http.status_code = 503),504 : (span.http.response.status_code = 504 || span.http.status_code = 504)",
+        "options": [
+          {
+            "text": "All",
+            "value": "true",
+            "selected": true
+          },
+          {
+            "text": "2xx: success",
+            "value": "((span.http.response.status_code >= 200 && span.http.response.status_code < 300) || (span.http.status_code >= 200 && span.http.status_code < 300))",
+            "selected": false
+          },
+          {
+            "text": "3xx: redirect",
+            "value": "((span.http.response.status_code >= 300 && span.http.response.status_code < 400) || (span.http.status_code >= 300 && span.http.status_code < 400))",
+            "selected": false
+          },
+          {
+            "text": "4xx: client error",
+            "value": "((span.http.response.status_code >= 400 && span.http.response.status_code < 500) || (span.http.status_code >= 400 && span.http.status_code < 500))",
+            "selected": false
+          },
+          {
+            "text": "5xx: server error",
+            "value": "((span.http.response.status_code >= 500 && span.http.response.status_code < 600) || (span.http.status_code >= 500 && span.http.status_code < 600))",
+            "selected": false
+          },
+          {
+            "text": "4xx and 5xx",
+            "value": "((span.http.response.status_code >= 400 && span.http.response.status_code < 600) || (span.http.status_code >= 400 && span.http.status_code < 600))",
+            "selected": false
+          },
+          {
+            "text": "400",
+            "value": "(span.http.response.status_code = 400 || span.http.status_code = 400)",
+            "selected": false
+          },
+          {
+            "text": "401",
+            "value": "(span.http.response.status_code = 401 || span.http.status_code = 401)",
+            "selected": false
+          },
+          {
+            "text": "403",
+            "value": "(span.http.response.status_code = 403 || span.http.status_code = 403)",
+            "selected": false
+          },
+          {
+            "text": "404",
+            "value": "(span.http.response.status_code = 404 || span.http.status_code = 404)",
+            "selected": false
+          },
+          {
+            "text": "409",
+            "value": "(span.http.response.status_code = 409 || span.http.status_code = 409)",
+            "selected": false
+          },
+          {
+            "text": "429",
+            "value": "(span.http.response.status_code = 429 || span.http.status_code = 429)",
+            "selected": false
+          },
+          {
+            "text": "500",
+            "value": "(span.http.response.status_code = 500 || span.http.status_code = 500)",
+            "selected": false
+          },
+          {
+            "text": "502",
+            "value": "(span.http.response.status_code = 502 || span.http.status_code = 502)",
+            "selected": false
+          },
+          {
+            "text": "503",
+            "value": "(span.http.response.status_code = 503 || span.http.status_code = 503)",
+            "selected": false
+          },
+          {
+            "text": "504",
+            "value": "(span.http.response.status_code = 504 || span.http.status_code = 504)",
+            "selected": false
+          }
+        ],
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "true"
+        },
+        "includeAll": false,
+        "multi": false,
+        "allowCustomValue": false,
+        "hide": 0
       }
     ]
   },
@@ -702,7 +800,7 @@
       "type": "table",
       "id": 13,
       "title": "Recent traces",
-      "description": "The latest traces of the chosen applications, from Tempo. Open one to see its spans; from a span, its log lines.",
+      "description": "The latest traces of the chosen applications, from Tempo. HTTP status (above) keeps the traces with a span that answered with that status: a class (4xx, 5xx) or one code. Open a row to see the matching spans with their status; open the trace to see all its spans, and from a span its log lines.",
       "datasource": {
         "type": "tempo",
         "uid": "tempo"
@@ -720,7 +818,7 @@
             "uid": "tempo"
           },
           "queryType": "traceql",
-          "query": "{resource.k8s.namespace.name=~\"$namespace\" && resource.service.name=~\"$service\"}",
+          "query": "{resource.k8s.namespace.name=~\"$namespace\" && resource.service.name=~\"$service\" && ${status:raw}} | select(span.http.response.status_code, span.http.status_code)",
           "limit": 30,
           "tableType": "traces",
           "refId": "A"
