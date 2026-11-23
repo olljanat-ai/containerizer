@@ -8,6 +8,15 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.53.1 (2026-11-23)
+
+- **Fixed: an Azure Artifacts feed worked only for the projects that name the host it was registered under.** Some
+  projects name `https://pkgs.dev.azure.com/<org>/...` and others `https://<org>.pkgs.visualstudio.com/...` for
+  the same feed; the feed proxy added the token to one of them only, and the feed could not be registered a second
+  time under the other host with the same NuGet source name. One registration now covers both hosts of the
+  organization, and a NuGet source name's URL may be on either
+  ([docs/source-control.md](docs/source-control.md#package-feeds)). Both hosts must be on the Firewall page.
+
 ## 0.53.0 (2026-11-21)
 
 A minor release: it changes the OS image (Grafana's settings and a dashboard), so appliances get it as an OS

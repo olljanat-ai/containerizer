@@ -78,6 +78,39 @@ class Feed:
         return not self.path or p == self.path or p.startswith(self.path + "/")
 
 
+def azure_alias(url: str) -> str | None:
+    """The same Azure Artifacts URL on the organization's other host: https://pkgs.dev.azure.com/<org>/... and
+    https://<org>.pkgs.visualstudio.com/... are one organization's feeds, and projects name either. None for any
+    other URL."""
+    u = urllib.parse.urlsplit(url)
+    host = (u.hostname or "").lower()
+    if u.scheme != "https" or u.port not in (None, 443):
+        return None
+    if host == "pkgs.dev.azure.com":
+        org, _, rest = u.path.lstrip("/").partition("/")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,49}", org):
+            return None
+        return f"https://{org.lower()}.pkgs.visualstudio.com/{rest}"
+    if host.endswith(".pkgs.visualstudio.com") and "." not in host[:-len(".pkgs.visualstudio.com")]:
+        return f"https://pkgs.dev.azure.com/{host[:-len('.pkgs.visualstudio.com')]}{u.path or '/'}"
+    return None
+
+
+def with_aliases(feeds: list[Feed]) -> list[Feed]:
+    """The feeds, each Azure Artifacts one also under its organization's other host (azure_alias): the same token,
+    the same credential to record how it went. A URL that is registered itself keeps its own feed."""
+    have = {(f.hostport, f.path) for f in feeds}
+    out = list(feeds)
+    for f in feeds:
+        other = azure_alias(f.url)
+        if other:
+            a = Feed(f.kind, other, f.token, f.username, f.cred, [])
+            if (a.hostport, a.path) not in have:
+                have.add((a.hostport, a.path))
+                out.append(a)
+    return out
+
+
 def _hostport_key(url: str) -> str:
     u = urllib.parse.urlsplit(url)
     host = (u.hostname or "").lower()
@@ -266,7 +299,7 @@ class FeedProxy:
 
     def set_feeds(self, feeds: list[Feed]) -> None:
         with self._lock:
-            self.feeds = list(feeds)
+            self.feeds = with_aliases(feeds)
             self.results = {}
 
     def hosts(self) -> set[str]:

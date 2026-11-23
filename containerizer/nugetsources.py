@@ -5,7 +5,8 @@ key="internal">`) that the repository never defines: on the developers' machines
 from their own user or machine NuGet.Config. A container build has no such file, so the mapped packages cannot be
 found. Administrators give a NuGet feed (Admin → Source control → Package feeds) the names projects use for it,
 `name[, name...] = source URL` per line (a line of names alone means the feed's URL itself); the source URL must be
-under the feed's URL, so the feed proxy adds the token to its requests.
+under the feed's URL (or, for Azure Artifacts, the same URL on the organization's other host), so the feed proxy adds
+the token to its requests.
 
 For each .NET component, the NuGet.Config files of its folder and the folders above it (to the repository's root)
 are read; a mapped key no `<packageSources>` defines gets the registered source of that name, added before restore
@@ -39,7 +40,9 @@ def parse(text: str, feed_url: str) -> list[tuple[str, str]]:
     text = (text or "").strip()
     if len(text) > MAX_TEXT:
         raise ValueError(f"NuGet source names: at most {MAX_TEXT} characters")
-    base = feed_url.rstrip("/")
+    from .feedproxy import azure_alias
+    # an Azure Artifacts feed is served under both hosts of its organization (the proxy signs both)
+    bases = [u.rstrip("/") for u in (feed_url, azure_alias(feed_url)) if u]
     out: list[tuple[str, str]] = []
     for line in text.splitlines():
         line = line.strip()
@@ -51,7 +54,8 @@ def parse(text: str, feed_url: str) -> list[tuple[str, str]]:
         if p.scheme != "https" or not p.hostname or "@" in p.netloc or p.query or p.fragment \
                 or re.search(r"[<>\"'\s]", url):
             raise ValueError(f"NuGet source names: {url!r} is not a plain https:// URL")
-        if not (url.rstrip("/").casefold() == base.casefold() or url.casefold().startswith(base.casefold() + "/")):
+        if not any(url.rstrip("/").casefold() == b.casefold() or url.casefold().startswith(b.casefold() + "/")
+                   for b in bases):
             raise ValueError(f"NuGet source names: {url} is not under the feed's URL {feed_url}")
         for n in (x.strip() for x in names.split(",")):
             if not NAME_RE.fullmatch(n or ""):
