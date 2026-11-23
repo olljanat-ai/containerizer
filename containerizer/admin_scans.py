@@ -967,7 +967,8 @@ def edit_repo(adm, conn, s, a, ident: int, flash: str) -> Response:
             f"<input id='Note' name='Note' maxlength='400' value='{e(r['AdminNote'] or '')}'>"
             f"<h3 id='applications'>Applications in this repository</h3>{split_opts}"
             f"<label for='SplitPath'>Folder pattern <span class='muted'>(relative to the repository, e.g. "
-            f"<code>scenarios/*</code> or <code>services/*</code>)</span></label>"
+            f"<code>scenarios/*</code> or <code>services/*</code>; several separated by commas, and one that "
+            f"starts with <code>!</code> leaves its folders out: <code>apps/*, tools/*, !apps/shared</code>)</span></label>"
             f"<input id='SplitPath' name='SplitPath' maxlength='200' value='{e(split_val)}' placeholder='apps/*'>"
             f"<p class='muted small'>A repository with several applications (a mono-repo): each folder the pattern matches "
             f"is assessed and deployed as its own application, with its own rating, results page and sandbox namespace. "
@@ -1076,8 +1077,9 @@ def save_repo(conn, ident: int, form: dict) -> Response:
     if mode in ("whole", "split"):                         # the form has it; the list's bulk actions do not
         pattern = form.get("SplitPath", [""])[0].strip().strip("/") if mode == "split" else ""
         if mode == "split" and not valid_split(pattern):
-            return _back(f"/admin/repositories/{ident}", "Folder pattern: a path relative to the repository, such as "
-                                                         "scenarios/* (letters, digits, . _ - / * ? [ ]; no ..).")
+            return _back(f"/admin/repositories/{ident}", "Folder pattern: paths relative to the repository, such as "
+                                                         "scenarios/* or apps/*, tools/*, !apps/shared (letters, digits, "
+                                                         ". _ - / * ? [ ]; no ..; 200 characters in all).")
         sets += ", SplitPath = %s"
         params.append(pattern or None)
     if "FilesPath" in form:                                  # the form has it; the list's bulk actions do not

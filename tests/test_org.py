@@ -787,6 +787,12 @@ def test_split_helpers(tmp_path):
     assert orgmod.suggest_split(tmp_path / ".other") == {"pattern": "apps/*", "count": 3}
     assert orgmod.split_folders(tmp_path, "scenarios/*") == ["scenarios/billing", "scenarios/claims", "scenarios/crm"]
     assert orgmod.split_folders(tmp_path, "*") == ["docs", "scenarios"]                 # hidden folders never
+    # several patterns, and ones that leave folders out
+    assert orgmod.split_folders(tmp_path, "scenarios/*, docs, !scenarios/c*") == ["docs", "scenarios/billing"]
+    assert orgmod.split_folders(tmp_path, "scenarios/*,scenarios/b*") == ["scenarios/billing", "scenarios/claims", "scenarios/crm"]
+    assert orgmod.split_patterns(" apps/* , !apps/shared/ ") == (["apps/*"], ["apps/shared"])
+    for bad in ("!docs", "a,,b", "a, ../x", "a, !/etc", ","):
+        assert not orgmod.valid_split(bad), bad
     for bad in ("../x", "a/../b", "/etc/*", "", "x" * 201, "a;b"):
         assert not orgmod.valid_split(bad) and orgmod.split_folders(tmp_path, bad) == []
     # one application with several projects: one root, no hint

@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.1 (2026-11-23)
+
+- **A repository's folder pattern takes several patterns**: separated by commas, and one that starts with `!`
+  leaves its folders out, for example `apps/*, tools/*, !apps/shared`. The repository's page and
+  [the documentation](docs/scheduled-scans.md) say so, and that the wildcards are those of file names, not regular
+  expressions.
+
 ## 0.54.0 (2026-11-23)
 
 A minor release: it changes the OS image (Grafana's dashboards and a data source), so appliances get it as an OS

@@ -374,7 +374,10 @@ A scan assesses each repository as one application. A mono-repo that holds sever
 one folder per application under `apps/` or `scenarios/`, would then get one rating for all of them. On the
 repository's page (**Admin → Repositories → the repository**), **Applications in this repository** →
 **One application per folder matching** a folder pattern relative to the repository (`scenarios/*`,
-`services/*`, `teams/*/apps/*`) makes each matching folder its own application:
+`services/*`, `teams/*/apps/*`) makes each matching folder its own application. The wildcards are those of file
+names (`*`, `?`, `[abc]`), not regular expressions. Several patterns are separated by commas, and one that starts
+with `!` leaves its folders out: `apps/*, tools/*, !apps/shared` takes every folder of `apps` and `tools` except
+`apps/shared` (200 characters in all).
 
 - its own assessment, rating and results page (the application's source path is the folder), owner and
   product mapping;
