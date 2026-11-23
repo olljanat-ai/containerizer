@@ -41,6 +41,9 @@ telemetry:
       # this agent release has .NET 8, 9 and 10 (a newer runtime crashes at start with it; 6 and 7 are gone since 1.10)
       min_version: "8.0"
       max_version: "10.0"
+      # the injected agent's native parts are built for glibc
+      exclude:
+        'alpine': "an Alpine (musl) image: the injected agent is built for glibc"
       copy: [cp, -r, /autoinstrumentation/., "{dir}"]
       mount: /otel-auto-instrumentation-dotnet
       size: 200Mi
@@ -83,6 +86,9 @@ telemetry:
       match:
         - '(?:^|/)python:(?P<version>\d+\.\d+)'
       min_version: "3.10"
+      # the injected agent's native parts are built for glibc
+      exclude:
+        'alpine': "an Alpine (musl) image: the injected agent is built for glibc"
       copy: [cp, -r, /autoinstrumentation/., "{dir}"]
       mount: /otel-auto-instrumentation-python
       size: 200Mi

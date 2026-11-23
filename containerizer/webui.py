@@ -1346,6 +1346,8 @@ VERIFY_FAILED = ("build-failed", "run-failed")
 def _verify(c: dict, healthy=()) -> str:
     s = c.get("VerifyStatus")
     if not s:
+        if c.get("ComponentId") in healthy and c.get("ComponentId") is not None:
+            return "<span class='v-ok'>Runs</span> <span class='muted small'>in the sandbox</span>"
         return "<span class='muted'>not run</span>"
     if s in VERIFY_FAILED and c.get("ComponentId") in healthy:     # built again for the sandbox, and it runs there
         return (f"<span class='v-ok'>Runs</span> <span class='muted small'>in the sandbox; the scan's "

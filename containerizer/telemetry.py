@@ -85,19 +85,46 @@ _FROM = re.compile(r"(?im)^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)")
 _ENV = re.compile(r"(?im)^\s*ENV\s+(.+)$")
 
 
+_STAGE = re.compile(r"(?im)^[ \t]*FROM[ \t]+(?:--platform=\S+[ \t]+)?(\S+)(?:[ \t]+AS[ \t]+(\S+))?")
+_ARG = re.compile(r"(?im)^[ \t]*ARG[ \t]+([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
+
+
+def _chain(dockerfile: str | None) -> tuple[str, list[str]]:
+    """(the image the last stage runs on, the texts of the stages it is built on: the first one first). A
+    repository's own Dockerfile often ends with `FROM base AS final` or `FROM ${RUNTIME_IMAGE}`: stage names are
+    followed and the ARGs' defaults filled in."""
+    text = re.sub(r"\\[ \t]*\r?\n", " ", dockerfile or "")      # continuation lines
+    args = {k: v.strip("\"'") for k, v in _ARG.findall(text)}
+    found = list(_STAGE.finditer(text))
+    stages = []
+    for i, m in enumerate(found):
+        image = re.sub(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}?",
+                       lambda x: args.get(x.group(1), x.group(2) or ""), m.group(1))
+        stages.append((image, (m.group(2) or "").casefold(), text[m.start():found[i + 1].start() if i + 1 < len(found)
+                                                                  else len(text)]))
+    if not stages:
+        return "", [text]
+    i, bodies = len(stages) - 1, []
+    while True:
+        image, _, body = stages[i]
+        bodies.insert(0, body)
+        prev = [j for j in range(i) if stages[j][1] and stages[j][1] == image.casefold()]
+        if not prev:
+            return image.split("@", 1)[0], bodies
+        i = prev[-1]
+
+
 def final_image(dockerfile: str | None) -> str:
-    """The image the component runs on: the last FROM of its Dockerfile, without a digest."""
-    found = _FROM.findall(dockerfile or "")
-    return found[-1].split("@", 1)[0] if found else ""
+    """The image the component runs on: the last FROM of its Dockerfile (through the stages it names), without a
+    digest."""
+    return _chain(dockerfile)[0]
 
 
 def image_env(dockerfile: str | None) -> dict[str, str]:
     """ENV of the Dockerfile's last stage (`ENV A=b C="d e"` and `ENV A b`): the pod's environment replaces these,
     so an option list the agent adds to (JAVA_TOOL_OPTIONS, NODE_OPTIONS, PYTHONPATH) has to start from them."""
-    text = re.sub(r"\\[ \t]*\r?\n", " ", dockerfile or "")      # continuation lines
-    starts = [m.start() for m in _FROM.finditer(text)]
     out: dict[str, str] = {}
-    for line in _ENV.findall(text[starts[-1]:] if starts else text):
+    for line in _ENV.findall("\n".join(_chain(dockerfile)[1])):
         line = line.strip()
         if "=" not in line.split(None, 1)[0]:
             parts = line.split(None, 1)
@@ -121,6 +148,9 @@ def runtime_of(dockerfile: str | None) -> tuple[str | None, str, str]:
         for pat in a.get("match") or []:
             m = re.search(pat, image)
             if m:
+                for no, why in (a.get("exclude") or {}).items():
+                    if re.search(no, image):
+                        return None, "", f"{why} ({image})"
                 return rid, (m.group("version") if "version" in m.groupdict() else "") or "", a.get("title") or rid
     for u in cfg.get("unsupported") or []:
         if re.search(u["match"], image):
@@ -172,6 +202,33 @@ def plan(entry: dict, dockerfile: str | None) -> dict:
         return {**out, "mode": "none", "runtime": rid, "version": version, "blocking": True,
                 "reason": f"{title} {version}: the agent of this Containerizer version supports up to {title} {hi}"}
     return {**out, "mode": "agent", "runtime": rid, "version": version, "reason": f"{title} {version} agent".replace("  ", " ")}
+
+
+def runs_on(dockerfile: str | None) -> dict:
+    """What a repository's own Dockerfile says about the image it builds: {"image": the image it runs on, "env": the
+    ENV of its stages}. Kept in build.json of a component moved from another platform (replatform.py), whose folder
+    in the output repository has no Dockerfile."""
+    return {"image": final_image(dockerfile), "env": image_env(dockerfile)}
+
+
+def own_image(cdir: Path) -> tuple[str | None, str]:
+    """(a Dockerfile's worth of text, "") for a component that runs the application's own image (build.json,
+    replatform.write_component): the image and the ENV the scan read from its Dockerfile, or the image it mirrors.
+    (None, why) when that is not known."""
+    try:
+        b = json.loads((cdir / "build.json").read_text())
+    except (OSError, ValueError):
+        return None, ""
+    if not isinstance(b, dict):
+        return None, ""
+    r = b.get("runs_on") if isinstance(b.get("runs_on"), dict) else {}
+    image = str(r.get("image") or b.get("mirrors") or "")
+    if not image or re.search(r"\s", image):
+        return None, ("its image is built from the repository's own Dockerfile: what it runs on is known from the "
+                      "next scan" if b.get("dockerfile") else "")
+    env = "".join('ENV %s="%s"\n' % (k, str(v).replace('"', '\\"')) for k, v in (r.get("env") or {}).items()
+                  if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(k)) and "\n" not in str(v))
+    return f"FROM {image}\n{env}", ""
 
 
 # --------------------------------------------------------------------------- the patches
@@ -301,11 +358,14 @@ def ops(folder: Path, doc: dict) -> tuple[list[dict], list[dict]]:
         cdir = folder / str(c.get("folder") or "")
         if not c.get("folder") or not cdir.is_dir():
             continue
+        why = ""
         try:
             dockerfile = (cdir / "Dockerfile").read_text()
         except OSError:
-            dockerfile = None
+            dockerfile, why = own_image(cdir)     # moved from another platform: the application's own image
         pl = plan(c, dockerfile)
+        if why and pl["mode"] == "none":
+            pl = {**pl, "reason": why}
         patches = workload_patches(component_docs(cdir), ns, pl, dockerfile)
         if not patches and pl["mode"] != "none":
             pl = {**pl, "mode": "none", "blocking": True, "reason": "it has no workload to instrument"}

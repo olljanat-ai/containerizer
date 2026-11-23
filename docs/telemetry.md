@@ -55,7 +55,11 @@ StatefulSet and CronJob of a component:
   `k8s.namespace.name`: the application's namespace; the pod and the container);
 - one more egress rule in the component's **NetworkPolicy**: the collector's pods, port 4318. Nothing else opens.
 
-The runtime is read from the image the component runs on (the last `FROM` of its generated Dockerfile):
+The runtime is read from the image the component runs on (the last `FROM` of its generated Dockerfile). An
+application [moved from another platform](platform-migration.md) runs its own image: the scan notes what the
+repository's Dockerfile builds on (through its stage names and `ARG` defaults, with the `ENV` it sets), or the
+image it mirrors. For one moved before 0.53.2 that was built from its own Dockerfile, this is known from the next
+scan.
 
 | Runtime | Agent | Instrumented |
 | --- | --- | --- |
@@ -73,6 +77,8 @@ Other cases:
 - **Go.** OpenTelemetry has no agent for a Go binary that runs under the sandbox's restrictions. Add the SDK to
   the code; the component then counts as instrumented.
 - **A runtime the agent does not support** (.NET 6, Node.js 20, ...) is left as it is.
+- **Alpine images** of .NET and Python are left as they are: the injected agents are built for glibc. Java and
+  Node.js are instrumented on Alpine too.
 - **Static files** (a single-page application served by nginx) run no code of the application: left as they are,
   and they do not keep the application from A+.
 
