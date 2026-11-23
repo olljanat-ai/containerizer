@@ -1,0 +1,139 @@
+{
+  "tags": [
+    "containerizer"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "editable": true,
+  "graphTooltip": 1,
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "__inputs": [],
+  "title": "Containerizer: trace",
+  "uid": "containerizer-trace",
+  "version": 1,
+  "refresh": "",
+  "description": "One trace of a sandbox application (Make it A+): its spans (Tempo) and its log lines (Loki). Opened from a trace ID on Containerizer: application telemetry, which readers without sign-in cannot follow into Explore. docs/telemetry.md",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Application telemetry",
+      "type": "link",
+      "icon": "dashboard",
+      "url": "/d/containerizer-telemetry/application-telemetry",
+      "keepTime": true
+    },
+    {
+      "title": "Documentation",
+      "type": "link",
+      "targetBlank": true,
+      "icon": "doc",
+      "url": "https://github.com/olljanat-ai/containerizer/blob/main/docs/telemetry.md"
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "type": "textbox",
+        "name": "trace",
+        "label": "Trace ID",
+        "description": "The trace to show: click a trace ID on Containerizer: application telemetry, or paste one.",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "traces",
+      "id": 1,
+      "title": "Trace $trace",
+      "description": "The spans of the trace. Needs a trace ID (above).",
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "queryType": "traceql",
+          "query": "$trace",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 18,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "logs",
+      "id": 2,
+      "title": "Log lines of the trace",
+      "description": "What the application logged through OpenTelemetry while handling this trace, from Loki.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{k8s_namespace_name=~\".+\"} | trace_id=\"$trace\"",
+          "queryType": "range",
+          "maxLines": 500,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Ascending",
+        "dedupStrategy": "none",
+        "prettifyLogMessage": false
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      }
+    }
+  ]
+}

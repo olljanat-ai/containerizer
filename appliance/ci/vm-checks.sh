@@ -81,7 +81,7 @@ import json, sys
 up = {t[\"labels\"][\"job\"] for t in json.load(sys.stdin)[\"data\"][\"activeTargets\"] if t[\"health\"] == \"up\"}
 sys.exit(0 if \"sandbox-telemetry\" in up else 1)"'
 wait_for 300 "Tempo and Loki answer the host" sh -c 'curl -fsS http://10.43.0.81:3200/ready >/dev/null && curl -fsS http://10.43.0.82:3100/ready >/dev/null'
-for d in containerizer-k3s containerizer-flux containerizer-telemetry; do
+for d in containerizer-k3s containerizer-flux containerizer-telemetry containerizer-trace; do
   curl -fsS "http://127.0.0.1:3000/grafana/api/dashboards/uid/$d" -u "admin:$(cat /etc/containerizer/secrets/grafana-admin)" >/dev/null \
     || { echo "Grafana has no dashboard $d" >&2; exit 1; }
 done

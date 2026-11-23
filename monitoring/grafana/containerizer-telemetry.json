@@ -571,7 +571,7 @@
       "type": "table",
       "id": 13,
       "title": "Recent traces",
-      "description": "The latest traces of the chosen applications, from Tempo. HTTP status (above) keeps the traces with a span that answered with that status: a class (4xx, 5xx) or one code. Open a row to see the matching spans with their status; open the trace to see all its spans, and from a span its log lines.",
+      "description": "The latest traces of the chosen applications, from Tempo. HTTP status (above) keeps the traces with a span that answered with that status: a class (4xx, 5xx) or one code. Open a row to see the matching spans with their status; click a trace ID to open the trace: all its spans, and its log lines.",
       "datasource": {
         "type": "tempo",
         "uid": "tempo"
@@ -597,7 +597,26 @@
       ],
       "fieldConfig": {
         "defaults": {},
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "traceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open this trace",
+                    "url": "/d/containerizer-trace/trace?var-trace=${__value.raw}&${__url_time_range}",
+                    "targetBlank": false
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "showHeader": true,
@@ -611,7 +630,7 @@
       "type": "logs",
       "id": 14,
       "title": "Logs",
-      "description": "What the chosen services log through OpenTelemetry, from Loki. A line with a trace links to it.",
+      "description": "What the chosen services log through OpenTelemetry, from Loki. A line with a trace links to it (View trace).",
       "datasource": {
         "type": "loki",
         "uid": "loki"
@@ -628,7 +647,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{k8s_namespace_name=~\"$namespace\", service_name=~\"$service\"}",
+          "expr": "{k8s_namespace_name=~\"$namespace\", service_name=~\"$service\", service_name=~\".+\"}",
           "queryType": "range",
           "maxLines": 500,
           "refId": "A"
