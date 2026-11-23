@@ -120,7 +120,11 @@ dashboard **Containerizer: application telemetry**: which applications and servi
 errors and duration, the latest traces and the logs. A trace opens with its spans, a span links to its log lines,
 and a log line with a trace links back. **HTTP status (traces)** at the top keeps the traces with a span that
 answered with that status: a class (2xx, 3xx, 4xx, 5xx, 4xx and 5xx) or one of the common codes (404, 500, ...);
-a row of *Recent traces* opens to the matching spans with their status. The rows are *Who sends telemetry*, *Traces and logs* and *Requests (from the
+a row of *Recent traces* opens to the matching spans with their status. A trace ID opens **Containerizer:
+trace**: a dashboard with the spans of that one trace and its log lines, and a log line's **Open trace** leads
+there too. (Grafana's own trace links lead to Explore, which its Viewer role cannot open: readers without sign-in,
+and users of your identity provider unless `grafana.env` maps them to Editor, for example with
+`GF_USERS_AUTO_ASSIGN_ORG_ROLE=Editor`.) The rows are *Who sends telemetry*, *Traces and logs* and *Requests (from the
 traces)*.
 
 Every application's results page has a **Grafana** line with links that set the dashboards' filters to that

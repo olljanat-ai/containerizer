@@ -8,6 +8,18 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.0 (2026-11-23)
+
+A minor release: it changes the OS image (Grafana's dashboards and a data source), so appliances get it as an OS
+upgrade.
+
+- **Fixed: a trace ID in Grafana led to *Containerizer: organization scans* instead of the trace.** Grafana's own
+  trace links open Explore, which the Viewer role cannot use (readers without sign-in since 0.53.0, and users
+  signed in through an identity provider without a role mapping): Grafana sent them to its home dashboard. A trace
+  ID now opens the new dashboard **Containerizer: trace** (the trace's spans and its log lines), and a log line
+  has **Open trace** that leads there ([docs/telemetry.md](docs/telemetry.md#grafana)).
+- **Fixed: the *Logs* panel of the telemetry dashboard showed an error with every application chosen** (Loki
+  refuses a selector that matches everything).
 ## 0.53.4 (2026-11-23)
 
 - **Fixed: the front page's rating filter left *Made A by a patch* and *Running in the sandbox* unfiltered.** Both

@@ -33,4 +33,10 @@ datasources:
           matcherRegex: 'trace[_]?id'
           name: TraceID
           url: '$${__value.raw}'
-          urlDisplayLabel: View trace
+          urlDisplayLabel: View trace (Explore)
+        # the same on a dashboard: readers with Grafana's Viewer role have no Explore (docs/telemetry.md)
+        - matcherType: label
+          matcherRegex: 'trace[_]?id'
+          name: Trace
+          url: '/d/containerizer-trace/trace?var-trace=$${__value.raw}'
+          urlDisplayLabel: Open trace

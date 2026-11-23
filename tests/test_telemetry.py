@@ -423,6 +423,20 @@ def test_the_appliance_collects_and_shows_what_the_rules_send_to():
                for k, v in choices.items() if k != "All")
     traces = next(p for p in dash["panels"] if p.get("datasource", {}).get("type") == "tempo")
     assert "${status:raw}" in traces["targets"][0]["query"]
+    # a trace ID opens the trace on a dashboard: Grafana's Viewer role (readers without sign-in, and SSO users
+    # without a role mapping) has no Explore, where the data source's own link leads
+    one = json.loads((root / "monitoring/grafana/containerizer-trace.json").read_text())
+    link = traces["fieldConfig"]["overrides"][0]
+    assert link["matcher"] == {"id": "byName", "options": "traceID"}
+    assert link["properties"][0]["value"][0]["url"].startswith(f"/d/{one['uid']}/trace?var-trace=${{__value.raw}}")
+    assert [v["name"] for v in one["templating"]["list"]] == ["trace"] and "containerizer" in one["tags"]
+    assert {p["type"]: p["targets"][0].get("query", p["targets"][0].get("expr")) for p in one["panels"]} == {
+        "traces": "$trace", "logs": '{k8s_namespace_name=~".+"} | trace_id="$trace"'}
+    derived = ds["loki"]["jsonData"]["derivedFields"]
+    assert derived[1]["url"] == f"/d/{one['uid']}/trace?var-trace=$${{__value.raw}}" and "datasourceUid" not in derived[1]
+    # Loki refuses a selector that every matcher may match empty ("All" is .*)
+    logs = next(p for p in dash["panels"] if p["type"] == "logs")
+    assert 'service_name=~".+"' in logs["targets"][0]["expr"]
     ids = [p["id"] for p in dash["panels"]]
     assert len(ids) == len(set(ids))
     cells = set()
