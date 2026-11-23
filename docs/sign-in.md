@@ -171,7 +171,8 @@ address (`/?bu=3&tag=pci`) can be shared or bookmarked. The [API](api.md) return
 
 The **Rating** row below it lists only the applications of one rating: **A+**, **A** (which includes the A+), **B**,
 **C**, **D** or **E**, each with how many of the applications shown have it. It combines with the other two
-(`/?bu=3&tag=pci&rating=B`); the tiles and the bar above the lists keep showing the whole mix, so the share of
+(`/?bu=3&tag=pci&rating=B`) and also narrows *Made A by a patch* and *Running in the sandbox* (an application made A
+by a patch is listed under the rating the rules give it, B); the tiles and the bar above the lists keep showing the whole mix, so the share of
 each rating stays in view.
 
 ![The front page filtered by a rating: the Rating row, and only the applications rated A](images/front-rating.png#only-light){ .cz-shot }

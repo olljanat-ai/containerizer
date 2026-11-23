@@ -150,9 +150,13 @@ appliance) names another one; the NetworkPolicy rule still opens the collector o
   back.
 - **.NET.** Native AOT and self-contained applications are not instrumented by an injected agent; the generated
   images are neither. Only one CLR profiler can be attached: a component with another APM agent keeps that one.
-- **Node.js** applications written as ES modules get less instrumentation than CommonJS ones.
+- **Node.js.** Applications written as ES modules (`import`) are instrumented through Node's loader hook
+  (`--experimental-loader`, which prints an *ExperimentalWarning* at start). **Logs** arrive only from a logging
+  library the agent knows (winston, pino, bunyan): what the application writes with `console.log` stays in the
+  pod's log and is not in Grafana's *Logs*.
 - **Python.** The agent's packages are put on the application's path; an application that pins an incompatible
   version of one of them (`protobuf`, `requests`, ...) can fail to start.
 - **Checked here:** the .NET agent on the generated (chiseled, read-only, non-root) image in a k3s cluster, and
-  the Python agent on a generated Flask image; the Java and Node.js agents are configured as the operator does
-  and were not run against an application.
+  the Python agent on a generated Flask image; the Node.js agent with a small HTTP server on Node.js 22 and 24
+  (CommonJS and ES modules: traces and metrics); the Java agent is configured as the operator does and was not run
+  against an application.

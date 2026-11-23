@@ -898,7 +898,8 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
                     admin: bool = True, rating_filter: str | None = None) -> str:
     """`admin`: the reader may see the applications not mapped to a product yet: an administrator, or anyone where
     there is no sign-in (no admin pages, so nobody else could map them). For everyone else they are left out: nobody
-    has said whose they are. `rating_filter` (RATING_FILTERS) narrows the lists of applications; the tiles and the
+    has said whose they are. `rating_filter` (RATING_FILTERS) narrows the lists of applications (the business units',
+    *Made A by a patch* and *Running in the sandbox*, each by the rating the rules give it); the tiles and the
     bar above them keep showing the whole mix."""
     apps = data["apps"]
     unmapped_apps = [a for a in apps if a.get("ProductId") is None]
@@ -999,7 +1000,7 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
                         f"{segmented(bc, len(bu_apps), f'Ratings in {bu or UNASSIGNED}', 10)}{''.join(body)}</section>")
 
     um = data.get("unmapped") or {}
-    note = a_patches_html(patched, nav) + running_html(apps)
+    note = a_patches_html([a for a in patched if a in listed], nav) + running_html(listed)
     if admin and unmapped_apps and nav:
         note += (f"<p class='note'>{len(unmapped_apps)} application(s) not mapped to a product are shown to administrators "
                  f"only; <a href='/admin/applications?show=unmapped'>map them</a> to show them to everyone.</p>")
