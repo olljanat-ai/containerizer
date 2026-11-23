@@ -801,8 +801,11 @@ def _bu_href(bu) -> str:
     return "/?bu=" + quote(str(bu if bu is not None else "none"))
 
 
-def _overview_href(bu=None, tag=None) -> str:
-    q = {k: v for k, v in (("bu", bu), ("tag", tag)) if v is not None}
+RATING_FILTERS = ("A+", "A", "B", "C", "D", "E")        # the front page's rating filter: A includes A+
+
+
+def _overview_href(bu=None, tag=None, rating=None) -> str:
+    q = {k: v for k, v in (("bu", bu), ("tag", tag), ("rating", rating)) if v is not None}
     return "/" + ("?" + urlencode(q) if q else "")
 
 
@@ -892,10 +895,11 @@ def a_patches_html(apps: list[dict], nav: str = "") -> str:
 
 
 def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag_filter: str | None = None,
-                    admin: bool = True) -> str:
+                    admin: bool = True, rating_filter: str | None = None) -> str:
     """`admin`: the reader may see the applications not mapped to a product yet: an administrator, or anyone where
     there is no sign-in (no admin pages, so nobody else could map them). For everyone else they are left out: nobody
-    has said whose they are."""
+    has said whose they are. `rating_filter` (RATING_FILTERS) narrows the lists of applications; the tiles and the
+    bar above them keep showing the whole mix."""
     apps = data["apps"]
     unmapped_apps = [a for a in apps if a.get("ProductId") is None]
     if not admin:
@@ -930,10 +934,10 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
     for a in all_apps:
         key = (a["BusinessUnitName"] or "", a["BusinessUnitId"])
         bus.setdefault(key, []).append(a)
-    chips = [f"<a class='chip{' on' if bu_filter is None else ''}' href='{e(_overview_href(tag=tag_filter))}'>All</a>"]
+    chips = [f"<a class='chip{' on' if bu_filter is None else ''}' href='{e(_overview_href(tag=tag_filter, rating=rating_filter))}'>All</a>"]
     for (name, bid), lst in sorted(bus.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
         on = bu_filter == str(bid if bid is not None else "none")
-        chips.append(f"<a class='chip{' on' if on else ''}' href='{e(_overview_href(str(bid if bid is not None else 'none'), tag_filter))}'>"
+        chips.append(f"<a class='chip{' on' if on else ''}' href='{e(_overview_href(str(bid if bid is not None else 'none'), tag_filter, rating_filter))}'>"
                      f"{e(name or UNASSIGNED)} <span class='muted'>{len(lst)}</span></a>")
     # tags of the applications in the business unit shown (the one filtered by stays, even with none left)
     tag_n: dict = {}
@@ -946,15 +950,31 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
     tag_chips = []
     if tag_n:
         tag_chips.append(f"<span class='muted small'>Tags</span><a class='chip tagchip{' on' if tag_filter is None else ''}' "
-                         f"href='{e(_overview_href(bu_filter))}'>Any</a>")
+                         f"href='{e(_overview_href(bu_filter, rating=rating_filter))}'>Any</a>")
         for k, (t, n) in sorted(tag_n.items()):
             on = tag_filter is not None and tag_filter.casefold() == k
-            tag_chips.append(f"<a class='chip tagchip{' on' if on else ''}' href='{e(_overview_href(bu_filter, None if on else t))}'"
+            tag_chips.append(f"<a class='chip tagchip{' on' if on else ''}' href='{e(_overview_href(bu_filter, None if on else t, rating_filter))}'"
                              f"{' aria-current=true' if on else ''}>{e(t)} <span class='muted'>{n}</span></a>")
+
+    def rated(a, r):
+        return a.get("Rating") == "A" and bool(a.get("Plus")) if r == "A+" else a.get("Rating") == r
+    rating_chips = []
+    if apps:
+        rating_chips.append(f"<span class='muted small'>Rating</span><a class='chip tagchip{' on' if rating_filter is None else ''}' "
+                            f"href='{e(_overview_href(bu_filter, tag_filter))}'>Any</a>")
+        for r in RATING_FILTERS:
+            n = sum(1 for a in apps if rated(a, r))
+            if not n and r != rating_filter:
+                continue
+            on = r == rating_filter
+            rating_chips.append(f"<a class='chip tagchip{' on' if on else ''}' "
+                                f"href='{e(_overview_href(bu_filter, tag_filter, None if on else r))}'"
+                                f"{' aria-current=true' if on else ''}>{e(r)} <span class='muted'>{n}</span></a>")
+    listed = [a for a in apps if rated(a, rating_filter)] if rating_filter is not None else apps
 
     sections = []
     groups: dict = {}
-    for a in apps:
+    for a in listed:
         groups.setdefault((a["BusinessUnitName"] or "", a["BusinessUnitId"]), {}).setdefault(
             (a["ProductName"] or "", a["ProductId"]), []).append(a)
     for (bu, bid), products in sorted(groups.items(), key=lambda kv: (kv[0][1] is None, kv[0][0].lower())):
@@ -1004,9 +1024,10 @@ def render_overview(data: dict, bu_filter: str | None = None, nav: str = "", tag
 {empty}<nav class='chips'>{''.join(chips) if all_apps else ''}</nav>
 {f"<nav class='chips tags' aria-label='Filter by tag'>{''.join(tag_chips)}</nav>" if tag_chips else ''}
 {f"<p class='muted'>No applications{' in this business unit' if bu_filter is not None else ''} have the tag <b>{e(tag_filter)}</b>.</p>" if tag_filter is not None and not apps and all_apps else ''}
+{f"<nav class='chips tags' aria-label='Filter by rating'>{''.join(rating_chips)}</nav>" if rating_chips else ''}
 <div class='tiles'>{tiles if all_apps else ''}</div>
 {f"<div class='overall'>{segmented(c, total, 'Ratings of all applications shown')}{legend(c)}</div>" if total else ''}
-{note}{''.join(sections)}
+{note}{f"<p class='muted'>No applications shown here are rated <b>{e(rating_filter)}</b>.</p>" if rating_filter is not None and apps and not listed else ''}{''.join(sections)}
 <footer>{legend()}<p class='muted small'>Readiness is 0-100 (higher is better) across the server components.
 Ratings come from rule-based analysis of the source code,
 and where noted were confirmed by building and running the generated containers.</p></footer>""")
@@ -1753,8 +1774,9 @@ def _keep_query(path: str, q: dict) -> str:
     if path == "/connectivity":
         return urlencode([(k, q[k][0]) for k in ("product", "bu") if re.fullmatch(r"\d{1,9}", (q.get(k) or [""])[0])])
     if path == "/":
-        bu = q.get("bu", [None])[0]
-        return f"bu={bu}" if bu and re.fullmatch(r"\d{1,9}|none", bu) else ""
+        bu, rating = q.get("bu", [None])[0], q.get("rating", [None])[0]
+        return urlencode([(k, v) for k, v in (("bu", bu if bu and re.fullmatch(r"\d{1,9}|none", bu) else None),
+                                              ("rating", rating if rating in RATING_FILTERS else None)) if v])
     return ""
 
 
@@ -1966,9 +1988,12 @@ def make_handler(connect, admin=None):
                         tag = " ".join(parse_qs(u.query).get("tag", [""])[0].split()) or None
                         if tag is not None and not TAG_RE.fullmatch(tag):
                             tag = None
+                        rating = parse_qs(u.query).get("rating", [None])[0]
+                        if rating not in RATING_FILTERS:
+                            rating = None
                         s, cookie = admin.dev_session(self.headers) if admin else (None, [])
                         sees_unmapped = admin is None or bool(s and s.admin)
-                        return self._send(200, render_overview(load_overview(conn), bu, nav, tag, sees_unmapped),
+                        return self._send(200, render_overview(load_overview(conn), bu, nav, tag, sees_unmapped, rating),
                                           head=head, forms=bool(nav), extra=cookie or None)
                     finally:
                         conn.close()
