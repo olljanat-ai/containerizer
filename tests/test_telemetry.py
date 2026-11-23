@@ -511,3 +511,80 @@ def test_grafana_links_for_everyone_only_when_grafana_is_open():
     assert webui.public_grafana({**env, "CONTAINERIZER_GRAFANA_PUBLIC": "true"}) == env["CONTAINERIZER_GRAFANA_URL"]
     assert webui.public_grafana({"CONTAINERIZER_GRAFANA_PUBLIC": "true"}) == ""
     assert webui.public_grafana({"CONTAINERIZER_GRAFANA_URL": "javascript:alert(1)", "CONTAINERIZER_GRAFANA_PUBLIC": "1"}) == ""
+
+
+OWN = """ARG RUNTIME=mcr.microsoft.com/dotnet/aspnet:8.0
+FROM ${RUNTIME} AS base
+ENV ASPNETCORE_URLS=http://+:8080
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+ENV BUILD_ONLY=1
+RUN dotnet publish -o /app
+FROM base AS final
+ENV APP_MODE="prod mode"
+COPY --from=build /app .
+"""
+
+
+def test_own_dockerfile_stage_names_and_args_are_followed():
+    assert t.final_image(OWN) == "mcr.microsoft.com/dotnet/aspnet:8.0"
+    assert t.image_env(OWN) == {"ASPNETCORE_URLS": "http://+:8080", "APP_MODE": "prod mode"}
+    assert t.runtime_of(OWN)[:2] == ("dotnet", "8.0")
+    assert t.final_image("FROM node:22 AS deps\nFROM deps\n") == "node:22"
+    assert t.final_image("FROM ${BASE:-python:3.12-slim}\n") == "python:3.12-slim"
+    assert t.final_image("") == ""
+
+
+def test_alpine_images_get_no_dotnet_or_python_agent():
+    rid, _, why = t.runtime_of("FROM python:3.12-alpine\n")
+    assert rid is None and "Alpine" in why
+    assert t.runtime_of("FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine\n")[0] is None
+    assert t.runtime_of("FROM node:22-alpine\n")[0] == "node"
+
+
+def test_component_moved_from_another_platform_is_instrumented(tmp_path):
+    """Its folder has no Dockerfile: build.json says what its own image runs on (replatform.write_component)."""
+    import json
+    import yaml
+    dep = {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "web", "namespace": "shop"},
+           "spec": {"template": {"spec": {"containers": [{"name": "web", "image": "r/shop/web:1"}]}}}}
+    for name, build in (("web", {"dockerfile": "web/Dockerfile", "runs_on": t.runs_on(OWN)}),
+                        ("sync", {"mirrors": "docker.io/library/node:22-slim"}),
+                        ("old", {"dockerfile": "old/Dockerfile"}),
+                        ("db", {"mirrors": "postgres:16"})):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "k8s.yaml").write_text(yaml.safe_dump({**dep, "metadata": {"name": name, "namespace": "shop"}}))
+        (d / "build.json").write_text(json.dumps(build))
+    text, why = t.own_image(tmp_path / "web")
+    assert text.startswith("FROM mcr.microsoft.com/dotnet/aspnet:8.0\n") and 'ENV APP_MODE="prod mode"' in text and not why
+    doc = {"app": "shop", "components": [{"component": n, "folder": n} for n in ("web", "sync", "old", "db")]}
+    ops, plans = t.ops(tmp_path, doc)
+    by = {p["component"]: p for p in plans}
+    assert (by["web"]["mode"], by["web"]["runtime"]) == ("agent", "dotnet")
+    assert (by["sync"]["mode"], by["sync"]["runtime"]) == ("agent", "node")
+    assert by["old"]["mode"] == "none" and "known from the next scan" in by["old"]["reason"]
+    assert by["db"]["mode"] == "none" and "postgres:16" in by["db"]["reason"]
+    assert ops
+
+
+def test_healthy_in_the_sandbox_counts_as_runs():
+    from containerizer import webui
+    assert "not run" in webui._verify({"VerifyStatus": None, "ComponentId": 5})
+    assert "Runs" in webui._verify({"VerifyStatus": None, "ComponentId": 5}, {5})
+    assert "not run" in webui._verify({"VerifyStatus": None, "ComponentId": None}, {5})
+
+
+def test_migration_notes_what_the_own_dockerfile_runs_on(tmp_path):
+    import json
+    from types import SimpleNamespace
+    from containerizer import replatform
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "Dockerfile").write_text(OWN)
+    sv = SimpleNamespace(build={"context": "web", "dockerfile": "web/Dockerfile"})
+    out = tmp_path / "out"
+    out.mkdir()
+    on = replatform._runs_on(tmp_path, sv, out)
+    assert on["image"] == "mcr.microsoft.com/dotnet/aspnet:8.0" and on["env"]["APP_MODE"] == "prod mode"
+    (out / "build.json").write_text(json.dumps({"runs_on": on}))
+    assert replatform._runs_on(None, sv, out) == on                  # a rewrite without the source keeps it
+    assert replatform._runs_on(tmp_path, SimpleNamespace(build=None), out) is None

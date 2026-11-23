@@ -1100,15 +1100,37 @@ def lab_docs(app: str, plan: Plan, names: set) -> list[dict]:
 
 # --------------------------------------------------------------------------- writing it out
 
-def write_component(out: Path, ns: str, sv: Service, image: str, uid: int, domain: str, idp_sb, local: str = "") -> list[dict]:
+def _runs_on(src: Path | None, sv: Service, cdir: Path) -> dict | None:
+    """What the component's own Dockerfile says its image runs on (telemetry.runs_on), for Make it A+; without the
+    source (the sandbox tester's rewrite), what build.json had."""
+    if src is None:
+        try:
+            old = json.loads((cdir / "build.json").read_text()).get("runs_on")
+        except (OSError, ValueError, AttributeError):
+            return None
+        return old if isinstance(old, dict) else None
+    if not sv.build or not sv.build.get("dockerfile"):
+        return None
+    from .telemetry import runs_on
+    try:
+        r = runs_on((src / sv.build["dockerfile"]).read_text(errors="replace"))
+    except OSError:
+        return None
+    return r if r["image"] else None
+
+
+def write_component(out: Path, ns: str, sv: Service, image: str, uid: int, domain: str, idp_sb, local: str = "",
+                    src: Path | None = None) -> list[dict]:
     from .generate import _yaml_docs
     cdir = out / k8s_name(sv.name)
     cdir.mkdir(parents=True, exist_ok=True)
+    on = _runs_on(src, sv, cdir)
     docs, idp = manifests(ns, sv, image, uid, domain, idp_sb)
     (cdir / "k8s.yaml").write_text(_yaml_docs(docs))
     build = {"platform": sv.platform, "descriptor": sv.source, "uid": uid,
              **({"context": sv.build.get("context"), "dockerfile": sv.build.get("dockerfile")} if sv.build
-                else {"mirrors": sv.image})}
+                else {"mirrors": sv.image}),
+             **({"runs_on": on} if on else {})}
     (cdir / "build.json").write_text(json.dumps(build, indent=2) + "\n")
     if idp:
         (cdir / "idp.json").write_text(json.dumps(idp, indent=2) + "\n")
@@ -1293,7 +1315,7 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
     comp_docs: dict[str, list[dict]] = {}
     for sv in keep:
         cn = k8s_name(sv.name)
-        comp_docs[cn] = write_component(gen, app, sv, images[cn][0], images[cn][2], domain, idp_sb)
+        comp_docs[cn] = write_component(gen, app, sv, images[cn][0], images[cn][2], domain, idp_sb, src=src)
     labd: list[dict] = []
     if plan.lab and keep:
         from .generate import _yaml_docs as _yd
@@ -1332,7 +1354,7 @@ def migrate_repo(src: Path, o, res, app: str, rel: str, dest: Path, gen: Path, r
                 if not patch or not apply_patch(sv, patch, why):
                     break
                 fixes.append(f"round {i + 1}: {why}")
-                comp_docs[cn] = write_component(gen, app, sv, ref, uid, domain, idp_sb)
+                comp_docs[cn] = write_component(gen, app, sv, ref, uid, domain, idp_sb, src=src)
                 from .imagescan import run_as_manifest
                 comp["run"] = run_as_manifest(local, comp_docs[cn])
             if fixes:

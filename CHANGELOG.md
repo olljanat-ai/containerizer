@@ -8,6 +8,18 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.53.2 (2026-11-23)
+
+- **Fixed: Make it A+ instrumented nothing in an application moved from another platform** (Docker Compose, Nomad,
+  ...): *its Dockerfile names no image*. Such an application runs its own image and has no generated Dockerfile;
+  the scan now notes what the repository's own Dockerfile builds on, and Make it A+ reads that, or the image the
+  component mirrors. A component built from its own Dockerfile needs one more scan first, and its row says so
+  ([docs/telemetry.md](docs/telemetry.md#what-is-injected)).
+- **Fixed: *Build and run* said "not run" for a component that is healthy in the sandbox.** It now says *Runs in the
+  sandbox*.
+- Make it A+ leaves Alpine images of .NET and Python as they are (the injected agents are built for glibc) and says
+  so.
+
 ## 0.53.1 (2026-11-23)
 
 - **Fixed: an Azure Artifacts feed worked only for the projects that name the host it was registered under.** Some
