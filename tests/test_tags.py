@@ -116,3 +116,18 @@ def test_overview_rating_filter():
     assert "href='/?bu=2&amp;tag=pci&amp;rating=B'" in html and "href='/?bu=1&amp;tag=pci'>Any</a>" in html
     assert webui._keep_query("/", {"bu": ["1"], "rating": ["A+"]}) == "bu=1&rating=A%2B"
     assert webui._keep_query("/", {"rating": ["x"]}) == ""
+
+
+def test_rating_filter_narrows_running_in_the_sandbox_and_the_patches():
+    run = {"n": 1, "url": "https://web-billing.sb.example/"}
+    apps = [dict(_app(1, "billing", 1, None), Rating="A", Running=run), dict(_app(2, "ledger", 1, None), Running=run),
+            dict(_app(3, "freight", 2, None), APatch={"SandboxStatus": "healthy"})]
+    data = {"apps": apps, "unmapped": {}}
+    html = webui.render_overview(data)
+    assert html.count("<h2>Running in the sandbox</h2>") == 1 and "/app/1#plan" in html and "/app/2#plan" in html
+    a = webui.render_overview(data, rating_filter="A")
+    assert "/app/1#plan" in a and "/app/2#plan" not in a
+    assert webui.a_patches_html([apps[2]], "") and webui.a_patches_html([apps[2]], "") not in a   # rated B: not under A
+    assert "A with a patch" in a                                                 # the tile keeps the whole mix
+    c = webui.render_overview(dict(data, apps=apps[:2]), rating_filter="B")
+    assert "/app/2#plan" in c and "/app/1#plan" not in c

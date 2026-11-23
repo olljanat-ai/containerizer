@@ -8,6 +8,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.53.4 (2026-11-23)
+
+- **Fixed: the front page's rating filter left *Made A by a patch* and *Running in the sandbox* unfiltered.** Both
+  lists now show only the applications of the chosen rating (one made A by a patch counts as the B the rules
+  give it).
+- **Fixed: Make it A+ on a Node.js application written as ES modules (`import`) sent metrics but no traces.** The
+  agent's loader hook is now loaded with it (checked on Node.js 22 and 24). The agent no longer asks the cloud
+  metadata address the NetworkPolicy does not open. Its logs are still only those of winston, pino or bunyan, not
+  `console.log` ([docs/telemetry.md](docs/telemetry.md#limits)).
+
 ## 0.53.3 (2026-11-23)
 
 - **The front page filters by rating**: the **Rating** row under the tags lists only the applications rated A+, A

@@ -78,8 +78,13 @@ telemetry:
       copy: [cp, -r, /autoinstrumentation/., "{dir}"]
       mount: /otel-auto-instrumentation-nodejs
       size: 200Mi
+      env:
+        # no cloud detectors: they ask a metadata address the NetworkPolicy does not open, and warn in the log
+        OTEL_NODE_RESOURCE_DETECTORS: env,host,os,process
+      # --require starts the agent; the loader hook lets it instrument an application written as ES modules (import),
+      # which sent metrics but no traces without it (checked on Node.js 22 and 24)
       append:
-        NODE_OPTIONS: "--require {dir}/autoinstrumentation.js"
+        NODE_OPTIONS: "--require {dir}/autoinstrumentation.js --experimental-loader={dir}/node_modules/@opentelemetry/instrumentation/hook.mjs"
     python:
       title: Python
       image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-python:0.66b2-5@sha256:2758fda65f55f77b6de42ee28bfcc190d3e31552bad30a38bc6724b822b7c245

@@ -116,10 +116,14 @@ def test_option_lists_keep_what_the_image_and_the_manifest_set():
     env = {e["name"]: e["value"] for e in t.agent_env("python", t.image_env(py))}
     assert env["PYTHONPATH"] == ("/otel-auto-instrumentation-python/opentelemetry/instrumentation/auto_instrumentation:"
                                  "/otel-auto-instrumentation-python:/app/src")
-    assert t.agent_env("node", {})[0] == {"name": "NODE_OPTIONS",
-                                          "value": "--require /otel-auto-instrumentation-nodejs/autoinstrumentation.js"}
-    again = t.agent_env("node", {"NODE_OPTIONS": "--require /otel-auto-instrumentation-nodejs/autoinstrumentation.js"})
-    assert again[0]["value"].count("--require") == 1
+    # Node.js: the agent, and its loader hook for applications written as ES modules (no traces without it)
+    node = {e["name"]: e["value"] for e in t.agent_env("node", {"NODE_OPTIONS": "--max-old-space-size=256"})}
+    opts = ("--require /otel-auto-instrumentation-nodejs/autoinstrumentation.js --experimental-loader="
+            "/otel-auto-instrumentation-nodejs/node_modules/@opentelemetry/instrumentation/hook.mjs")
+    assert node["NODE_OPTIONS"] == "--max-old-space-size=256 " + opts
+    assert node["OTEL_NODE_RESOURCE_DETECTORS"] == "env,host,os,process"
+    again = {e["name"]: e["value"] for e in t.agent_env("node", {"NODE_OPTIONS": opts})}
+    assert again["NODE_OPTIONS"].count("--require") == 1
 
 
 def test_its_own_sdk_gets_the_address_only_and_a_cronjob_is_patched_in_its_job_template():
