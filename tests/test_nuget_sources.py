@@ -26,6 +26,12 @@ def test_parse_names_and_urls():
     got = nugetsources.parse(f"internal, Contoso = {MAIN}\n# a comment\n\nlegacy", FEED)
     assert got == [("internal", MAIN), ("Contoso", MAIN), ("legacy", FEED)]
     assert nugetsources.parse("", FEED) == []
+    # Azure Artifacts: the organization's other host is the same feed
+    old = "https://contoso.pkgs.visualstudio.com/_packaging/main/nuget/v3/index.json"
+    assert nugetsources.parse(f"Contoso = {old}", FEED) == [("Contoso", old)]
+    assert nugetsources.parse(f"Contoso = {MAIN}", "https://contoso.pkgs.visualstudio.com/") == [("Contoso", MAIN)]
+    with pytest.raises(ValueError, match="not under the feed's URL"):
+        nugetsources.parse("x = https://fabrikam.pkgs.visualstudio.com/_packaging/main/nuget/v3/index.json", FEED)
 
 
 @pytest.mark.parametrize("text,why", [

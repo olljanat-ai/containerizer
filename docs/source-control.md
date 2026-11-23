@@ -132,8 +132,9 @@ which dotnet, npm, Maven and Gradle use (the generated Dockerfiles pass a proxy 
 Which URL to register: the token goes with every request under it, so register the narrowest URL that still covers
 the downloads. Azure Artifacts downloads packages by the feed's id rather than its name, so register the
 organization's packaging URL, e.g. `https://pkgs.dev.azure.com/contoso/` (or `https://pkgs.dev.azure.com/contoso/project/`
-for a project-scoped feed), and also its older host, e.g. `https://contoso.pkgs.visualstudio.com/`, when the
-projects' `.npmrc` or `nuget.config` name that one. A build that a feed refuses (npm `E401`, NuGet `NU1301` with
+for a project-scoped feed). One registration covers both hosts of the organization: projects whose `.npmrc` or
+`nuget.config` name the older `https://contoso.pkgs.visualstudio.com/` get the same token (and the other way
+round), so do not register the feed twice. Both hosts must be on the Firewall page. A build that a feed refuses (npm `E401`, NuGet `NU1301` with
 401) says so in its reason and points here. The repository's own `nuget.config`, `.npmrc`, `pom.xml` or `build.gradle` still names
 the feed as before; a credentials entry it has (for example `%NUGET_PAT%`) is replaced by the proxy's.
 
@@ -163,7 +164,8 @@ internal, Contoso, AzureArtifacts = https://pkgs.dev.azure.com/contoso/_packagin
 ContosoLegacy = https://pkgs.dev.azure.com/contoso/_packaging/legacy/nuget/v3/index.json
 ```
 
-The URL is the source's own (`index.json` for v3), and must be under the feed's URL so the proxy signs its requests;
+The URL is the source's own (`index.json` for v3), and must be under the feed's URL (for Azure Artifacts, either
+host of the organization) so the proxy signs its requests;
 a line of names alone means the feed's URL itself. A name belongs to one feed only (names compare case-insensitively,
 as NuGet's do).
 

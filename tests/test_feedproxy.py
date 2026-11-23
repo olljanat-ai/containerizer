@@ -139,3 +139,34 @@ def test_repository_dockerfile_trusts_the_proxy_ca():
     assert out[16] == "  echo x"
     win = "# escape=`\nFROM mcr.microsoft.com/windows/servercore\nRUN dir\n"
     assert trust_build_ca(win) == win
+
+
+def test_azure_artifacts_feed_is_served_under_both_hosts(tmp_path):
+    new, old = "https://pkgs.dev.azure.com/Contoso/", "https://contoso.pkgs.visualstudio.com/"
+    assert fp.azure_alias(new) == old and fp.azure_alias(old) == "https://pkgs.dev.azure.com/contoso/"
+    assert fp.azure_alias("https://pkgs.dev.azure.com/contoso/proj/_packaging/f/nuget/v3/index.json") == \
+        "https://contoso.pkgs.visualstudio.com/proj/_packaging/f/nuget/v3/index.json"
+    assert fp.azure_alias("https://contoso.pkgs.visualstudio.com") == "https://pkgs.dev.azure.com/contoso/"
+    for other in ("https://pkgs.dev.azure.com/", "https://nuget.pkg.github.com/contoso/", "https://dev.azure.com/contoso/",
+                  "http://pkgs.dev.azure.com/contoso/", "https://a.b.pkgs.visualstudio.com/",
+                  "https://pkgs.dev.azure.com:8443/contoso/"):
+        assert fp.azure_alias(other) is None, other
+    cred = SimpleNamespace(id=7)
+    f = fp.Feed("nuget", old, "tok-12345678", "x", cred, [("Contoso", old + "_packaging/main/nuget/v3/index.json")])
+    feeds = fp.with_aliases([f])
+    assert [(x.hostport, x.path, x.cred) for x in feeds] == [("contoso.pkgs.visualstudio.com:443", "", cred),
+                                                           ("pkgs.dev.azure.com:443", "/contoso", cred)]
+    head = b"GET /contoso/_packaging/main/nuget/v3/index.json HTTP/1.1\r\nHost: pkgs.dev.azure.com\r\n\r\n"
+    out, feed = fp.rewrite(head, [feeds[1]])
+    assert feed is feeds[1] and b"Authorization: Basic " in out
+    out, feed = fp.rewrite(head.replace(b"/contoso/", b"/fabrikam/"), [feeds[1]])     # another organization: nothing
+    assert feed is None and b"Authorization" not in out
+    # a URL registered itself keeps its own feed (its own token)
+    own = fp.Feed("nuget", "https://pkgs.dev.azure.com/contoso/", "other-token")
+    assert fp.with_aliases([f, own]) == [f, own]
+    p = fp.FeedProxy(tmp_path / "proxy", "127.0.0.1:0", log=lambda m: None)
+    try:
+        p.set_feeds([f])
+        assert p.hosts() == {"contoso.pkgs.visualstudio.com", "pkgs.dev.azure.com"}
+    finally:
+        p.close()

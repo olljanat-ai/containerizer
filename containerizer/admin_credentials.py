@@ -78,7 +78,8 @@ sent over https, or plain http to this machine. Choosing a model: docs/source-co
             ("Azure Artifacts", """<p>A <b>personal access token</b> with the scope <b>Packaging: Read</b> only, for this
 organization, of an account that may read the feeds. Feed URL: the organization's packaging URL, which covers every
 feed and the URLs packages are downloaded from, e.g. <code>https://pkgs.dev.azure.com/contoso/</code>; user name: any
-text, e.g. <code>containerizer</code>.</p>"""),
+text, e.g. <code>containerizer</code>. It also covers the projects that name the organization's other host
+(<code>https://contoso.pkgs.visualstudio.com/</code>): register the feed once.</p>"""),
             ("GitHub Packages", """<p>A <b>personal access token (classic)</b> with the scope <b>read:packages</b> only.
 NuGet: <code>https://nuget.pkg.github.com/contoso/</code>, npm: <code>https://npm.pkg.github.com/</code>, Maven:
 <code>https://maven.pkg.github.com/contoso/</code>; user name: the token's account (npm: empty).</p>"""),
