@@ -740,7 +740,8 @@ def main(argv=None) -> int:
                    help="skip repositories with no commit for this many days (default 183, about 6 months; 0: off)")
     s.add_argument("--max-repos", type=int, default=0)
     s.add_argument("--split", action="append", default=[], metavar="REPO=PATTERN",
-                   help="assess each folder matching PATTERN (relative to the repository, e.g. scenarios/*) as its own "
+                   help="assess each folder matching PATTERN (relative to the repository, e.g. scenarios/*; several separated "
+                        "by commas, !pattern leaves folders out) as its own "
                         "application; REPO is <project>/<repository> (GitHub: _/<repository>); repeatable")
     s.add_argument("--parallel", type=int, default=1, metavar="N",
                    help="repositories processed at the same time, each in its own process (1 to 8; default 1)")

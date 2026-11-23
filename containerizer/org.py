@@ -1269,19 +1269,33 @@ def valid_files_path(path: str) -> bool:
             and path.rstrip("/") not in FILES_PATH_DENY)
 
 
+def split_patterns(pattern: str) -> tuple[list[str], list[str]]:
+    """(the patterns folders are taken from, the ones they are left out by) of a folder pattern: several patterns
+    are separated by commas, and one that starts with `!` leaves its folders out (`apps/*, tools/*, !apps/shared`)."""
+    parts = [p.strip().strip("/") for p in (pattern or "").split(",")]
+    return [p for p in parts if p and not p.startswith("!")], [p[1:].strip().strip("/") for p in parts if p.startswith("!")]
+
+
 def valid_split(pattern: str) -> bool:
-    """A folder pattern relative to the repository: no absolute paths, no `..`, at most 200 characters."""
-    return bool(pattern) and bool(SPLIT_RE.fullmatch(pattern)) and not pattern.startswith("/")
+    """Folder patterns relative to the repository (split_patterns): no absolute paths, no `..`, at most 200
+    characters in all, and at least one that takes folders in."""
+    raw = [p.strip().removeprefix("!").strip() for p in (pattern or "").split(",")]
+    if not pattern or len(pattern) > 200 or any(not p or p.startswith("/") for p in raw):
+        return False
+    take, leave = split_patterns(pattern)
+    return bool(take) and all(bool(SPLIT_RE.fullmatch(p)) and not p.startswith("/") for p in take + leave)
 
 
 def split_folders(src: Path, pattern: str) -> list[str]:
-    """The folders (relative, posix) the pattern matches in the clone: real folders inside it, not symlinks or
-    hidden ones, at most SPLIT_MAX."""
+    """The folders (relative, posix) the pattern matches in the clone (split_patterns: several patterns, and ones
+    that leave folders out): real folders inside it, not symlinks or hidden ones, each once, at most SPLIT_MAX."""
     if not valid_split(pattern):
         return []
     root = src.resolve()
+    take, leave = split_patterns(pattern)
+    out = {d for p in leave for d in src.glob(p)}
     found = []
-    for d in sorted(src.glob(pattern.rstrip("/"))):
+    for d in sorted({d for p in take for d in src.glob(p)} - out):
         rel = d.relative_to(src)
         if not d.is_dir() or d.is_symlink() or any(p.startswith(".") for p in rel.parts) or rel.parts == ():
             continue
