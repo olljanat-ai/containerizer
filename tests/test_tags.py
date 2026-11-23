@@ -94,3 +94,25 @@ def test_results_page_shows_the_automatic_tag_outside_the_editor(monkeypatch):
                          "OnlyCommands": None}]}
     html = webui._tags_section(app, {"tags_csrf": "<input type='hidden'>"})
     assert "class='tag auto' href='/?tag=stateful'" in html and "value='pci'" in html
+
+
+def test_overview_rating_filter():
+    apps = [dict(_app(1, "billing", 1, "pci"), Rating="A", Plus=True), dict(_app(2, "ledger", 1, "pci"), Rating="A"),
+            _app(3, "freight", 2, None)]
+    data = {"apps": apps, "unmapped": {}}
+    html = webui.render_overview(data)
+    assert "aria-label='Filter by rating'" in html
+    assert "href='/?rating=A%2B'>A+ <span class='muted'>1</span>" in html
+    assert "href='/?rating=A'>A <span class='muted'>2</span>" in html and "href='/?rating=B'>B <span" in html
+    assert "?rating=C" not in html                                             # no application rated C: no chip
+    html = webui.render_overview(data, rating_filter="A+")
+    assert "/app/1'" in html and "/app/2'" not in html and "/app/3'" not in html
+    assert "Applications assessed</div><div class='value'>3<" in html          # the tiles keep the whole mix
+    html = webui.render_overview(data, rating_filter="A")
+    assert "/app/1'" in html and "/app/2'" in html and "/app/3'" not in html
+    # kept in the other filters' links, and they in its own
+    html = webui.render_overview(data, bu_filter="1", tag_filter="pci", rating_filter="B")
+    assert "No applications shown here are rated <b>B</b>" in html
+    assert "href='/?bu=2&amp;tag=pci&amp;rating=B'" in html and "href='/?bu=1&amp;tag=pci'>Any</a>" in html
+    assert webui._keep_query("/", {"bu": ["1"], "rating": ["A+"]}) == "bu=1&rating=A%2B"
+    assert webui._keep_query("/", {"rating": ["x"]}) == ""

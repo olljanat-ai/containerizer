@@ -305,7 +305,8 @@ and last seen. Search a binary, a database server or a host to find every applic
 ### Tag it, filter by it
 
 Administrators and operators tag applications (customer-facing, PCI, migration wave 1, ...), and everyone
-filters the front page by a tag: the tiles and bars then count only those applications.
+filters the front page by a tag: the tiles and bars then count only those applications. The **Rating** row
+below the tags lists only the applications of one rating (A+, A, B, C, D or E).
 
 [Application tags :octicons-arrow-right-24:](sign-in.md#application-tags)
 

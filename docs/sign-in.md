@@ -169,6 +169,14 @@ address (`/?bu=3&tag=pci`) can be shared or bookmarked. The [API](api.md) return
 ![The front page filtered by a tag: only the applications with it, counted in the tiles](images/front-tags.png#only-light){ .cz-shot }
 ![The front page filtered by a tag: only the applications with it, counted in the tiles](images/front-tags-dark.png#only-dark){ .cz-shot }
 
+The **Rating** row below it lists only the applications of one rating: **A+**, **A** (which includes the A+), **B**,
+**C**, **D** or **E**, each with how many of the applications shown have it. It combines with the other two
+(`/?bu=3&tag=pci&rating=B`); the tiles and the bar above the lists keep showing the whole mix, so the share of
+each rating stays in view.
+
+![The front page filtered by a rating: the Rating row, and only the applications rated A](images/front-rating.png#only-light){ .cz-shot }
+![The front page filtered by a rating: the Rating row, and only the applications rated A](images/front-rating-dark.png#only-dark){ .cz-shot }
+
 ## Sign-in for the results pages (optional)
 
 By default anyone who reaches the web UI over HTTPS can read the results. Set `CONTAINERIZER_VIEWERS`

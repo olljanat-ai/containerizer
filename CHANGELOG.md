@@ -8,6 +8,12 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.53.3 (2026-11-23)
+
+- **The front page filters by rating**: the **Rating** row under the tags lists only the applications rated A+, A
+  (with the A+), B, C, D or E, each with its count. It combines with the business unit and the tag; the tiles and
+  the bar keep showing the whole mix.
+
 ## 0.53.2 (2026-11-23)
 
 - **Fixed: Make it A+ instrumented nothing in an application moved from another platform** (Docker Compose, Nomad,
