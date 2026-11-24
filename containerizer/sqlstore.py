@@ -337,7 +337,13 @@ def verify_logs(v: dict) -> list[dict]:
             except OSError:
                 continue
             cut = len(text) > VERIFY_LOG_MAX
-            text = redact(REDACT(text[-VERIFY_LOG_MAX:]))     # the tokens it knows, then the usual shapes
+            head = ""
+            if stage == "build":                              # the attempt's Dockerfile and build command come first
+                try:
+                    head = (folder / f"dockerfile-{n}.log").read_text(errors="replace")[:200_000]
+                except OSError:
+                    pass
+            text = redact(REDACT(head + text[-VERIFY_LOG_MAX:]))     # the tokens it knows, then the usual shapes
             out.append({"attempt": n, "stage": stage, "chars": len(text), "truncated": cut,
                         "gz": gzip.compress(text.encode("utf-8", "replace"), 6)})
     return out

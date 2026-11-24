@@ -332,8 +332,13 @@ def build(a: AppAssessment, c: Component, plan: dict, workdir: Path, timeout: in
     (workdir / "Dockerfile.dockerignore").write_text(dockerignore(a.repo))
     tag = f"containerizer/{app_ns(a.name)}-{k8s_name(c.name)}:verify"
     readable_context(a.repo.root)
-    rc, log = _run(["docker", "build", "--progress=plain", *_build_env_args(), "-f", str(workdir / "Dockerfile"),
-                    "-t", tag, str(a.repo.root)], timeout)
+    cmd = ["docker", "build", "--progress=plain", *_build_env_args(), "-f", str(workdir / "Dockerfile"),
+           "-t", tag, str(a.repo.root)]
+    # what was built and how, for the results page (sqlstore.verify_logs): the paths of this run mean nothing there
+    shown = ["Dockerfile" if x == str(workdir / "Dockerfile") else "<the repository>" if x == str(a.repo.root) else x
+             for x in cmd]
+    (workdir / "build.cmd").write_text(" ".join(x if re.fullmatch(r"[\w@%+=:,./<>-]+", x) else "'" + x + "'" for x in shown))
+    rc, log = _run(cmd, timeout)
     (workdir / "build.log").write_text(log)
     return rc == 0, log, tag
 
@@ -545,7 +550,7 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
     # and a retry overwrote the log that explained the failure
     result["log_dir"] = str(workdir)
     if workdir.is_dir():
-        for old in [*workdir.glob("build-*.log"), *workdir.glob("run-*.log")]:
+        for old in [*workdir.glob("build-*.log"), *workdir.glob("run-*.log"), *workdir.glob("dockerfile-*.log")]:
             old.unlink(missing_ok=True)
 
     def keep_log(stage: str, attempt: int, text: str) -> None:
@@ -566,6 +571,11 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
         show("building the image" + (" in Development mode" if env_override else ""))
         ok, log, tag = build(a, c, plan, workdir, timeout)
         keep_log("build", attempt, log)
+        try:                                 # the Dockerfile of this attempt (a retry writes another) and its command
+            from .verifylog import header
+            keep_log("dockerfile", attempt, header((workdir / "build.cmd").read_text(), (workdir / "Dockerfile").read_text()))
+        except OSError:
+            pass
         stage, details = "build", {}
         if ok:
             stage = "run"
