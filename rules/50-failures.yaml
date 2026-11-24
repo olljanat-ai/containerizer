@@ -181,15 +181,17 @@ failures:
 
   - id: build-node-engine-unsupported
     stage: build
-    match: 'The engine "node" is incompatible with this module\. Expected version "(?P<range>[^"]+)"|ERR_PNPM_UNSUPPORTED_ENGINE[^\n]*\n[^\n]*wanted: (?P<range2>[^\n]+)|EBADENGINE[^\n]*\n[^\n]*required: \{[^}]*node: .(?P<range3>[^\x27"]+)|notsup Required: \{[^}\n]*"node":"(?P<range4>[^"]+)"|ERR_PNPM_UNSUPPORTED_ENGINE[^\n]*wanted: \{[^}\n]*"node":"(?P<range5>[^"]+)"|Your Node version is incompatible[^\n]*\n+Expected version: (?P<range6>[^\n]+)'
+    match: 'The engine "node" is incompatible with this module\. Expected version "(?P<range>[^"]+)"|ERR_PNPM_UNSUPPORTED_ENGINE[^\n]*\n[^\n]*wanted: (?P<range2>[^\n]+)|EBADENGINE[^\n]*\n[^\n]*required: \{[^}]*node: .(?P<range3>[^\x27"]+)|notsup Required: \{[^}\n]*"node":"(?P<range4>[^"]+)"(?:[^}\n]*"npm":"(?P<npm>[^"]+)")?|ERR_PNPM_UNSUPPORTED_ENGINE[^\n]*wanted: \{[^}\n]*"node":"(?P<range5>[^"]+)"|Your Node version is incompatible[^\n]*\n+Expected version: (?P<range6>[^\n]+)'
     outcome: retry
     refs: [https://nodejs.org/en/about/previous-releases, https://docs.npmjs.com/cli/configuring-npm/package-json#engines]
     diagnosis: >-
-      A package requires a Node.js version ({range}) the image's Node.js line is not in; the image is built and run on
-      the newest line the package allows (an out-of-support one included), or the nearest one without enforcing the
-      declaration. Upgrading the dependency is a separate task, not part of containerizing the application.
-    # node_engine: gen_jvm_node.apply_node_engine picks the line (rules/images.yaml node.server_lines and node.legacy)
-    fix: {node_engine: '{range}'}
+      A package requires a Node.js version ({range}), or with it an npm version, the image's Node.js line does not
+      have; the image is built and run on the newest line that has both (an out-of-support one included), or the
+      nearest one without enforcing the declaration. Upgrading the dependency is a separate task, not part of
+      containerizing the application.
+    # node_engine, npm_engine: gen_jvm_node.apply_node_engine picks the line (rules/images.yaml node.server_lines,
+    # node.legacy and node.npm)
+    fix: {node_engine: '{range}', npm_engine: '{npm}'}
     learn: {when: {}}
 
   # ------------------------------------------------------------------ run

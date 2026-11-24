@@ -163,7 +163,9 @@ class SystemPage:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # may carry a private key: owner only
         with os.fdopen(fd, "w") as f:
             f.write(json.dumps(body))
-        tmp.rename(d / f"{int(time.time() * 1000)}-{secrets.token_hex(4)}.json")
+        # the agent takes them in the order of their names: nanoseconds, so two requests of the same millisecond
+        # (save the schedule, then back up now) keep their order
+        tmp.rename(d / f"{time.time_ns()}-{secrets.token_hex(4)}.json")
 
     def ask(self, action: str, user: str, name: str, wait: float = 45.0, poll: float = 0.1, **args) -> dict | None:
         """A request that has an answer (the database browser, dbbrowse.py): the request carries a random id and

@@ -85,6 +85,8 @@ def parse_node_project(path: Path, root: Path) -> Project:
         top = engine_max_major(eng["node"])
         if top is not None:
             pr.properties["NodeEngineMax"] = str(top)
+    if isinstance(eng.get("npm"), str) and eng["npm"].strip():
+        pr.properties["NpmEngine"] = eng["npm"].strip()         # each Node.js line brings its own npm (images.yaml)
     ws = m.get("workspaces")
     globs = ws if isinstance(ws, list) else (ws.get("packages") if isinstance(ws, dict) else None) or []
     pnpm_ws = path.parent / "pnpm-workspace.yaml"
@@ -153,6 +155,42 @@ def engine_allows(rng: str, major: int) -> bool:
     """Whether the range allows this Node.js major version (a range that cannot be read allows any)."""
     bounds = engine_bounds(rng)
     return not bounds or any(low <= major and (top is None or major <= top) for low, top in bounds)
+
+
+def version_allows(rng: str, version: str) -> bool:
+    """Whether a semver range (engines.npm: ">=10.9.0 <11", "^10 || ^11", "10.x") allows a full version ("10.9.4").
+    A range that cannot be read allows any."""
+    try:
+        ver = tuple(int(x) for x in (version.split(".") + ["0", "0"])[:3])
+    except ValueError:
+        return True
+    read = False
+    for alt in str(rng).split("||"):
+        alt = re.sub(r"(\d\S*)\s+-\s+", r">=\1 <=", alt.strip())
+        if alt in ("", "*", "x", "latest"):
+            return True
+        toks = re.findall(r"(\^|~|>=|<=|>|<|=)?\s*v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?", alt)
+        ok = bool(toks)
+        for op, a, b, c in toks:
+            read = True
+            given = [int(a)] + [int(x) for x in (b, c) if x not in ("", "x", "*")]
+            low = tuple(given + [0] * (3 - len(given)))
+            if len(given) == 3 and op in ("", "="):
+                ok &= ver == low
+            elif op in ("", "=", "~", "^"):             # 10 / 10.9 / ~10.9.1 / ^10.9: from there to the next step
+                keep = 1 if op == "^" and given[0] > 0 else max(1, len(given) - (1 if op == "~" and len(given) == 3 else 0))
+                ok &= ver >= low and ver[:keep] == low[:keep]
+            elif op == ">=":
+                ok &= ver >= low
+            elif op == ">":
+                ok &= ver[:len(given)] > tuple(given)
+            elif op == "<":
+                ok &= ver < low
+            elif op == "<=":
+                ok &= ver[:len(given)] <= tuple(given)
+        if ok:
+            return True
+    return not read
 
 
 def _find_lockfile(d: Path, root: Path) -> tuple[Path, str] | None:

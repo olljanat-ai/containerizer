@@ -143,6 +143,8 @@ job_sql() {
     python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py \
       tests/test_sandbox.py tests/test_worker.py tests/test_devdb.py tests/test_rule_review.py \
       tests/test_replatform.py tests/test_llm_queue.py tests/test_refactor.py tests/test_egress.py tests/test_links.py tests/test_llm_usage.py tests/test_inventory.py tests/test_telemetry.py -rs || rc=1
+  # what SQL Server itself says about a failure (a session it killed, a dump): the container is removed below
+  [ $rc = 0 ] || docker logs --tail 400 cz-ci-mssql > "$WORK/logs/sql-server.log" 2>&1
   if [ $rc = 0 ]; then
     say "image builds and the UI serves results"
     (
@@ -290,9 +292,10 @@ finish() {  # job, rc, start
   TIME[$1]=$((SECONDS - $3))
   if [ "$2" = 0 ]; then RESULT[$1]="${c_green}pass${c_off}"; else RESULT[$1]="${c_red}FAIL${c_off}"; failed=1; fi
 }
-# sql (SQL Server in its own container, about 10 minutes) runs in the background next to the other jobs: they use
-# none of its container, port or image. It starts after test, whose parallel workers take every CPU (SQL Server's
-# queries time out under that load). CI_LOCAL_PARALLEL=0 runs every job in turn.
+# Every job runs in turn. CI_LOCAL_PARALLEL=1 runs sql (SQL Server in its own container, about 10 minutes alone)
+# in the background next to the other jobs, started after test: quicker by a quarter of an hour, but next to the
+# security job's image builds SQL Server's queries time out, and it has ended sessions and written a crash dump
+# (4 of 13 runs failed that way), so it is not the default.
 bg=
 start_bg() {
   bg_start=$SECONDS
@@ -300,7 +303,7 @@ start_bg() {
   ( job_sql ) > "$WORK/logs/sql.log" 2>&1 &
   bg_pid=$!
 }
-if [ "${CI_LOCAL_PARALLEL:-1}" = 1 ] && [ ${#jobs[@]} -gt 1 ] && [[ " ${jobs[*]} " == *" sql "* ]]; then
+if [ "${CI_LOCAL_PARALLEL:-0}" = 1 ] && [ ${#jobs[@]} -gt 1 ] && [[ " ${jobs[*]} " == *" sql "* ]]; then
   bg=sql
   [[ " ${jobs[*]} " == *" test "* ]] || start_bg
 fi
