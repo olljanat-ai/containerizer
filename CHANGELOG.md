@@ -15,6 +15,8 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   retry chose the same line again (*build-node-engine-unsupported; fix already applied; giving up*). The Node.js
   line is now also chosen by the npm its image brings: from the application's own `engines.npm` before the first
   build, and from the range a build's engine error names ([Java and Node.js](docs/java-node.md)).
+- **Fixed:** two requests to the appliance's system agent made within the same millisecond could be carried out
+  in the wrong order (found by a test that failed now and then).
 
 ## 0.54.3 (2026-11-24)
 
