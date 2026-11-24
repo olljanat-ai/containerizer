@@ -28,6 +28,9 @@ built or run during the assessment.
   `peerDependencies`) and npm/yarn workspaces or `pnpm-workspace.yaml`.
 - Workspace packages that depend on each other become project references, so a finding in a
   shared package reaches the applications that use it.
+- An Angular workspace with several applications (`angular.json`: `projects` with a build target that are not
+  libraries) gives one component per application, named after the Angular project. The workspace's own
+  `package.json` is then a library. A workspace with one application stays one component.
 - The lockfile (`package-lock.json` v2/v3 or `pnpm-lock.yaml`) is walked from the package's own
   runtime dependencies: packages that install only on Windows (`"os": ["win32"]`, not optional)
   and packages that compile a native addon are recorded.
@@ -125,6 +128,14 @@ The site is the build's output folder: the one `angular.json` (`outputPath`), th
 When none of those has an `index.html`, it is the folder of the `index.html` the build wrote (the shallowest one;
 Angular's server rendering writes `index.csr.html`, served as `index.html`), so `dist/<project>/browser` or an
 `outDir` the config computes is found too. A build that wrote no page fails with the folders it did write.
+
+An application of an Angular workspace with several is built in the workspace's folder, after the workspace's
+install: with the `package.json` script that builds it (one that runs `ng build` for that project, such as
+`"build-portal": "ng build --configuration production --project portal"`), else with
+`ng build <project> --configuration production`. Its site is that project's `outputPath` (`dist/<project>`
+without one). With a [folder pattern](scheduled-scans.md), match the workspace's folder (`Web`), not the
+applications' folders in it (`Web/*`): an application's folder alone has no `package.json` that installs or
+builds it.
 
 ## Verification
 

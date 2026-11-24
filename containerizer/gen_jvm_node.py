@@ -458,6 +458,20 @@ def node_build_plan(a, c, plan: dict) -> None:
         steps.append(plan["module"])
     plan["build_steps"] = steps
     plan["package_name"] = p.name if (p.manifest or {}).get("name") else ""
+    ng = props.get("AngularProject")
+    if ng:
+        # one application of an Angular workspace: built in the workspace's folder, by the package.json script that
+        # builds it, else by the Angular CLI
+        plan["module"] = _rel(ws_dir or install, install)
+        run = {"npm": "npm run", "pnpm": "pnpm run", "yarn": "yarn run"}[pm]
+        cli = {"npm": "npx ng", "pnpm": "pnpm exec ng", "yarn": "yarn ng"}[pm]
+        conf = f" --configuration {props['AngularConfiguration']}" if props.get("AngularConfiguration") else ""
+        cmd = f"{run} {_q(props['AngularBuild'])}" if props.get("AngularBuild") else f"{cli} build {_q(ng)}{conf}"
+        plan["build_cmds"] = [f"(cd {_q(plan['module'])} && {cmd})" if plan["module"] else cmd]
+        plan["workspace"] = True
+        add_reason(plan, "angular-workspace-application", f"`{ng}` is one of the applications of the Angular workspace "
+                   f"`{props.get('WorkspaceRoot')}` (angular.json): the image installs the workspace and builds this "
+                   f"application with `{cmd}`.", ["https://angular.dev/reference/configs/workspace-config"])
 
 
 def node_plan(a, c, plan: dict) -> None:
@@ -560,10 +574,12 @@ def _install_cmd(plan: dict) -> str:
 def _build_lines(plan: dict) -> list[str]:
     """The build scripts: in-repository dependencies first (pnpm orders a filtered run itself)."""
     steps = plan.get("build_steps") or []
-    if not steps:
+    if not steps and not plan.get("build_cmds"):
         return []
     pm = plan["pm"]
-    if pm == "pnpm" and plan.get("workspace") and plan.get("package_name"):
+    if plan.get("build_cmds"):
+        cmds = list(plan["build_cmds"])
+    elif pm == "pnpm" and plan.get("workspace") and plan.get("package_name"):
         cmds = [f"pnpm --filter {_q(plan['package_name'] + '...')} run build"]
     else:
         run = {"npm": "npm run", "pnpm": "pnpm run", "yarn": "yarn run"}[pm]

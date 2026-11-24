@@ -419,6 +419,17 @@ rules:
                 runtime: true
               - property: {StartScript: 'node\s.*'}
 
+  # An Angular workspace with several applications (angular.json): each application is a project of its own
+  # (scan_node.angular_apps), built from the workspace; the workspace's package.json builds none itself.
+  - id: role-angular-workspace
+    phase: role
+    role: library
+    priority: 73
+    when:
+      all:
+        - kind: node
+        - property: {AngularWorkspace: "true"}
+
   # Electron, NW.js and Tauri desktop apps; React Native, Expo, Ionic/Capacitor and Cordova phone apps.
   - id: role-node-desktop
     phase: role

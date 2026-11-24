@@ -488,7 +488,9 @@ def extract_facts(repo, comp, rules: list[Rule]) -> dict:
         facts["build_script"] = "build" if "build" in scripts else ""
         facts["start_script"] = "start" if "start" in scripts else ""
         ang = p.dir / "angular.json"
-        if ang.exists():
+        if p.properties.get("AngularProject"):          # one application of an Angular workspace (scan_node.angular_apps)
+            facts["dist_dir"] = p.properties.get("AngularOutput") or "dist"
+        elif ang.exists():
             a = _load_json(ang)
             for proj in (a.get("projects") or {}).values():
                 op = (((proj.get("architect") or {}).get("build") or {}).get("options") or {}).get("outputPath")

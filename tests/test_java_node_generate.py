@@ -452,6 +452,42 @@ SQLITE_APP = {"name": "svc", "type": "module", "scripts": {"start": "node server
               "dependencies": {"express": "4", "better-sqlite3": "^12.9.0"}}
 
 
+def test_angular_workspace_with_several_applications_is_one_component_each(tmp_path):
+    def app(root, out=None, **more):
+        opts = {"tsConfig": f"{root}/tsconfig.json", **({"outputPath": out} if out else {})}
+        return {"projectType": "application", "root": root,
+                "architect": {"build": {"options": opts, "configurations": {"production": {}}}}, **more}
+    ws = {"projects": {"f3-corporate": app("imagine", "dist/corporate"), "f3-me": app("inspire"),
+                       "shared": {"projectType": "library", "root": "shared", "architect": {"build": {}}}}}
+    node(tmp_path, "Web/", {"name": "web", "private": True, "dependencies": {"@angular/core": "^20.0.0"},
+                           "devDependencies": {"@angular/cli": "^20.0.0"},
+                           "scripts": {"build-imagine": "ng build --configuration production --project f3-corporate",
+                                       "watch": "ng build --watch --project f3-me"}},
+         {"angular.json": json.dumps(ws), "package-lock.json": "{}"})
+    for d in ("imagine", "inspire"):          # each folder's own package.json only hands over to the workspace
+        node(tmp_path, f"Web/{d}/", {"scripts": {"build": f"cd .. && npm run build-{d}"}},
+             {"tsconfig.json": "{}", "src/index.html": "<app-root></app-root>", "src/main.ts": "bootstrap();"})
+    a = assess(tmp_path)
+    assert sorted((c.name, c.role, c.project.rel) for c in a.components) == [
+        ("f3-corporate", "spa", "Web/imagine/tsconfig.json"), ("f3-me", "spa", "Web/inspire/tsconfig.json")]
+    assert {c.name: c.role_rule for c in a.libraries}["web"] == "role-angular-workspace"
+    assert all(c.project.files for c in a.components)
+    _, c, plan, df = plan_and_df(tmp_path, "f3-corporate")
+    assert (plan["build_root"], plan["module"], c.facts["dist_dir"]) == ("Web", "", "dist/corporate")
+    assert "COPY Web/ ." in df and "npm ci" in df and "    npm run 'build-imagine'\n" in df
+    assert "'dist/corporate/browser' 'dist/corporate'" in df and "angular-workspace-application" in df
+    _, c, plan, df = plan_and_df(tmp_path, "f3-me")           # no script builds it (the watch script does not count)
+    assert "    npx ng build 'f3-me' --configuration production\n" in df and "'dist/f3-me/browser'" in df
+
+    # one application: the workspace's package.json is the component, as before
+    one = tmp_path / "one"
+    node(one, "", {"name": "shop", "scripts": {"build": "ng build"}, "dependencies": {"@angular/core": "^20.0.0"}},
+         {"angular.json": json.dumps({"projects": {"shop": app("", "dist/shop")}}), "package-lock.json": "{}",
+          "tsconfig.json": "{}", "src/index.html": "<app-root></app-root>"})
+    a = assess(one)
+    assert [(c.name, c.role, c.project.rel) for c in a.components] == [("shop", "spa", "package.json")]
+
+
 def test_node_sqlite_file_in_the_app_folder_is_a_link_to_the_volume(tmp_path):
     """A Node.js app with an embedded SQLite file runs as it is: the file its code opens becomes a symbolic link to
     the volume. Without knowing where the file is it rated B, and Make it A tried to move it to SQL Server."""

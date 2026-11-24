@@ -8,6 +8,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.2 (2026-11-24)
+
+- **An Angular workspace with several applications gives one component per application.** A workspace whose
+  `angular.json` lists several applications was one component that built only a `build` script and served one
+  output folder; without a `build` script nothing was built. Each application is now built in the workspace with
+  the `package.json` script that builds it (`ng build ... --project <name>`), else with `ng build <name>`, and
+  serves its own `outputPath`. With a folder pattern, match the workspace's folder, not the applications' folders
+  ([Java and Node.js](docs/java-node.md)).
+- `tools/appfingerprint.py`: a standalone script (Python's standard library only) that records what applications'
+  production URLs serve (sign-in redirect, page, scripts, source maps, well-known files), as JSON. A first version,
+  to see whether the data helps to find the repository an application is built from; Containerizer does not read
+  its output yet.
+
 ## 0.54.1 (2026-11-23)
 
 - **A repository's folder pattern takes several patterns**: separated by commas, and one that starts with `!`
