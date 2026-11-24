@@ -143,6 +143,8 @@ job_sql() {
     python -m pytest -q tests/test_sqlstore.py tests/test_admin.py tests/test_roles.py tests/test_trends.py \
       tests/test_sandbox.py tests/test_worker.py tests/test_devdb.py tests/test_rule_review.py \
       tests/test_replatform.py tests/test_llm_queue.py tests/test_refactor.py tests/test_egress.py tests/test_links.py tests/test_llm_usage.py tests/test_inventory.py tests/test_telemetry.py -rs || rc=1
+  # what SQL Server itself says about a failure (a session it killed, a dump): the container is removed below
+  [ $rc = 0 ] || docker logs --tail 400 cz-ci-mssql > "$WORK/logs/sql-server.log" 2>&1
   if [ $rc = 0 ]; then
     say "image builds and the UI serves results"
     (
