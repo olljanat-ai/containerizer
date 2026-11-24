@@ -371,7 +371,10 @@ is not confirmed, the confidence is not counted as confirmed by building and run
 of the generated files and the sandbox. Its **Build and run** column links to *why*: the component's details show
 the reason (the failure rule, the names whose lookups failed, or *no known cause*) and the errors of the build
 log or the end of the run log. Administrators and operators also get **Whole log** there: the complete log of
-every attempt of that scan (`build, attempt 1`, `run, attempt 2`), secrets masked, to download.
+every attempt of that scan (`build, attempt 1`, `run, attempt 2`), secrets masked, to download. **Dockerfile and
+build command** above it opens what each attempt built, and the `docker build` command it ran, in a new tab (a
+retry can build another Dockerfile, when a failure rule changed the plan); the whole build log starts with the same.
+Scans from 0.54.3 on keep them.
 
 ![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed.png#only-light){ .cz-shot }
 ![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed-dark.png#only-dark){ .cz-shot }

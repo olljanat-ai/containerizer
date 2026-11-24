@@ -812,6 +812,29 @@ def test_the_whole_logs_of_a_failed_verification(tmp_path):
     assert verifylog.route(adm, SimpleNamespace(cursor=lambda as_dict=False: Cur([])), None, op, "GET",
                            ["verify-log", "5", "9", "build-1.log"]).status == 404
 
+    # the Dockerfile and the build command of an attempt: the start of its stored build log, shown on their own
+    assert verifylog.route(adm, conn, None, op, "GET", ["verify-log", "5", "9", "dockerfile-1.txt"]).status == 404   # none kept
+    (tmp_path / "dockerfile-1.log").write_text(verifylog.header(
+        "docker build --build-arg HTTPS_PROXY=http://user:hunter2secret@proxy:3128 -f Dockerfile -t x '<the repository>'",
+        "FROM node:24 AS build\nRUN npm run 'build-imagine'\n"))
+    with_head = sqlstore.verify_logs(v)
+    text = gzip.decompress(with_head[0]["gz"]).decode()
+    assert text.startswith(verifylog.H_CMD + "\ndocker build") and "hunter2secret" not in text
+    assert text.endswith("EAI_AGAIN nodejs.org\n") and with_head[0]["chars"] == len(text)
+    assert not gzip.decompress(with_head[1]["gz"]).decode().startswith(verifylog.H_CMD)       # attempt 2 kept none
+    assert verifylog._has_header(with_head[0]["gz"][:600]) and not verifylog._has_header(logs[0]["gz"][:600])
+    assert not verifylog._has_header(None) and not verifylog._has_header(b"not gzip")
+    conn = SimpleNamespace(cursor=lambda as_dict=False: Cur([{**row, "LogGz": with_head[0]["gz"]}]))
+    r = verifylog.route(adm, conn, None, op, "GET", ["verify-log", "5", "9", "dockerfile-1.txt"])
+    body = r.body.decode()
+    assert r.status == 200 and "RUN npm run 'build-imagine'" in body and "EAI_AGAIN" not in body and verifylog.H_OUT not in body
+    assert not any(k == "Content-Disposition" for k, _ in r.headers) and r.ctype.startswith("text/plain")
+    assert verifylog.route(adm, conn, None, nobody, "GET", ["verify-log", "5", "9", "dockerfile-1.txt"]).status == 403
+    html = verifylog.links_html([{"stage": "build", "attempt": 1, "chars": 3000, "truncated": False, "url": "/u",
+                                  "dockerfile": "/admin/verify-log/5/9/dockerfile-1.txt"},
+                                 {"stage": "run", "attempt": 1, "chars": 3000, "truncated": False, "url": "/u2", "dockerfile": ""}])
+    assert html.count("dockerfile-1.txt") == 1 and "Dockerfile and build command" in html
+
 
 @needs_sql
 def test_verify_logs_in_sql_server(db, tmp_path):

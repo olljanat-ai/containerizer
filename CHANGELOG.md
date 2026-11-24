@@ -8,6 +8,13 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.3 (2026-11-24)
+
+- **A failed build shows its Dockerfile and build command.** On the application's page, a component whose build
+  or run failed has **Dockerfile and build command** next to *Whole log* (administrators and operators): what each
+  attempt of the scan built and the `docker build` command it ran, opened in the browser. The whole build log
+  starts with the same. Kept by scans from this version on; secrets are masked as in the logs.
+
 ## 0.54.2 (2026-11-24)
 
 - **An Angular workspace with several applications gives one component per application.** A workspace whose
