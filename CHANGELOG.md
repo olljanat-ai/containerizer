@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.4 (2026-11-24)
+
+- **Fixed: a Node.js build that requires an npm version failed on Node.js 24.** A `package.json` with
+  `"engines": {"node": ">=22.20.0", "npm": ">=10.9.0 <11"}` was built on Node.js 24, whose npm is 11, and the
+  retry chose the same line again (*build-node-engine-unsupported; fix already applied; giving up*). The Node.js
+  line is now also chosen by the npm its image brings: from the application's own `engines.npm` before the first
+  build, and from the range a build's engine error names ([Java and Node.js](docs/java-node.md)).
+
 ## 0.54.3 (2026-11-24)
 
 - **A failed build shows its Dockerfile and build command.** On the application's page, a component whose build

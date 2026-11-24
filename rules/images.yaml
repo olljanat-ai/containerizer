@@ -45,6 +45,9 @@ node:
     "16": {build: 'node:16-bookworm-slim', build_native: 'node:16-bookworm', runtime: 'gcr.io/distroless/nodejs16-debian11:nonroot', slim: 'node:16-bookworm-slim'}
     "18": {build: 'node:18-bookworm-slim', build_native: 'node:18-bookworm', runtime: 'gcr.io/distroless/nodejs18-debian12:nonroot', slim: 'node:18-bookworm-slim'}
     "20": {build: 'node:20-bookworm-slim', build_native: 'node:20-bookworm', runtime: 'gcr.io/distroless/nodejs20-debian12:nonroot', slim: 'node:20-bookworm-slim'}
+  # The npm each line's image brings (its newest release's): an application or a package that names an npm range
+  # (engines.npm) is built on a line whose npm is in it (gen_jvm_node.node_line).
+  npm: {"14": "6.14.18", "16": "8.19.4", "18": "10.8.2", "20": "10.8.2", "22": "10.9.4", "24": "11.6.0"}
   app_uid: 65532
 python:
   # Python runs on the line it declares (.python-version, runtime.txt, requires-python), or the next

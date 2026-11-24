@@ -339,18 +339,31 @@ def node_image(kind: str, line: int) -> str:
     return old[kind] if old else im[f"server_{kind}_{line}"]
 
 
-def node_line(props: dict, engine: str | None = None) -> int:
+def npm_fits(line: int, rng: str) -> bool:
+    """Whether the npm a Node.js line's image brings (rules/images.yaml node.npm) is in a range (engines.npm)."""
+    from .scan_node import version_allows
+    npm = {str(k): str(v) for k, v in (_images()["node"].get("npm") or {}).items()}.get(str(line))
+    return not rng or not npm or version_allows(rng, npm)
+
+
+def node_line(props: dict, engine: str | None = None, npm: str | None = None) -> int:
     """The Node.js line the image uses: the newest supported one, or the newest one the application allows
     (package.json engines.node), an out-of-support line included: the application runs on the Node.js it was
     written for. `engine` is the range of a dependency that refused the line (plan node_engine): the newest line
-    both allow, else the newest one the dependency allows."""
+    both allow, else the newest one the dependency allows. With npm as the package manager, a line whose npm is
+    outside engines.npm (or `npm`, the range a build refused: plan npm_engine) is left out when another fits: a
+    package that wants npm 10 is built on Node.js 22, not 24."""
     from .scan_node import engine_allows
     lines = node_lines()
+    if (props.get("PackageManager") or "npm") == "npm":
+        fits = [x for x in lines if npm_fits(x, props.get("NpmEngine") or "") and npm_fits(x, npm or "")]
+        lines = fits or lines
     mx = props.get("NodeEngineMax")
+    supported = [int(x) for x in _images()["node"].get("server_lines", [22, 24]) if int(x) in lines]
     if mx and mx.isdigit():
         own = next((x for x in reversed(lines) if x <= int(mx)), lines[0])
     else:
-        own = max(int(x) for x in _images()["node"].get("server_lines", [22, 24]))
+        own = max(supported) if supported else lines[-1]
     if not engine:
         return own
     ok = [x for x in lines if engine_allows(engine, x)]
@@ -358,16 +371,21 @@ def node_line(props: dict, engine: str | None = None) -> int:
 
 
 def apply_node_engine(plan: dict, props: dict | None = None) -> None:
-    """The plan's Node.js line for its `node_engine` (the range a dependency requires, from the build's engine
-    error) and the application's own engines.node. A range no image satisfies is not enforced at install time:
-    the application is built and run on the nearest line instead of being held back by the declaration."""
+    """The plan's Node.js line for its `node_engine` and `npm_engine` (the ranges a build's engine error names) and
+    the application's own engines.node and engines.npm. A range no image satisfies is not enforced at install
+    time: the application is built and run on the nearest line instead of being held back by the declaration."""
     from .scan_node import engine_allows
     props = props if props is not None else plan.get("node_props") or {}
     dep = plan.get("node_engine") or ""
-    line = node_line(props, dep or None)
+    dep = "" if dep.startswith("{") else dep                # the failure named no Node.js range (verify._fmt)
+    npm = plan.get("npm_engine") or ""
+    npm = "" if npm.startswith("{") else npm
+    line = node_line(props, dep or None, npm or None)
     plan["node"] = line
     own = props.get("NodeEngine") or ""
-    if (dep and not engine_allows(dep, line)) or (own and not engine_allows(own, line)):
+    npm_off = (props.get("PackageManager") or "npm") == "npm" and not (
+        npm_fits(line, props.get("NpmEngine") or "") and npm_fits(line, npm))
+    if (dep and not engine_allows(dep, line)) or (own and not engine_allows(own, line)) or npm_off:
         plan["build_env"] = {**(plan.get("build_env") or {}), "npm_config_engine_strict": "false"}
         plan["ignore_engines"] = True
     elif plan.pop("ignore_engines", None):
@@ -427,7 +445,7 @@ def node_build_plan(a, c, plan: dict) -> None:
             add_reason(plan, "node-pnpm-version", f"The lockfile was written by pnpm {major} (lockfileVersion "
                        f"{m.group(1)}) and package.json names no packageManager; the build uses pnpm {major}, as "
                        "newer pnpm cannot read it.", ["https://pnpm.io/npmrc#lockfile-version"])
-    plan["node_props"] = {k: props[k] for k in ("NodeEngine", "NodeEngineMax") if props.get(k)}
+    plan["node_props"] = {k: props[k] for k in ("NodeEngine", "NodeEngineMax", "NpmEngine", "PackageManager") if props.get(k)}
     apply_node_engine(plan, props)
     line = plan["node"]
     if plan.get("ignore_engines"):

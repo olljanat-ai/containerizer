@@ -249,6 +249,37 @@ def test_a_dependency_engine_range_moves_the_image_to_a_line_it_allows(tmp_path)
     assert plan["node"] == 24 and plan["ignore_engines"]
     assert 'npm_config_engine_strict="false"' in dockerfile_node(plan)
 
+    # npm, too: each line brings its own, and a package that wants npm 10 is not built on Node.js 24 (npm 11)
+    from containerizer.scan_node import version_allows
+    for rng, ver, ok in ((">=10.9.0 <11", "10.9.4", True), (">=10.9.0 <11", "11.6.0", False), (">=10.9.0 <11", "10.8.2", False),
+                         ("^10 || ^11", "11.6.0", True), ("10.x", "10.8.2", True), ("~10.8.1", "10.9.4", False),
+                         ("^8.19", "8.19.4", True), (">8", "8.19.4", False), ("<=10", "10.9.4", True), ("10.9.4", "10.9.4", True),
+                         ("9 - 10", "10.9.4", True), ("*", "6.14.18", True), ("whatever", "6.14.18", True)):
+        assert version_allows(rng, ver) is ok, (rng, ver)
+    log = ('#11 2.156 npm error notsup Required: {"node":">=22.20.0","npm":">=10.9.0 <11"}\n'
+           '#11 2.156 npm error notsup Actual:   {"node":"v24.22.3","npm":"11.19.1"}')
+    fr, caps = diagnose(log, "build", load_failures())
+    assert (caps["range"], caps["npm"]) == (">=22.20.0", ">=10.9.0 <11") and "{" not in _fmt_text(fr, caps)
+    a, c, plan, df = plan_and_df(tmp_path, "svc")
+    merge_plan(plan, {"node_engine": caps["range"], "npm_engine": caps["npm"]})
+    assert plan["node"] == 22 and not plan.get("ignore_engines") and "FROM node:22-bookworm-slim AS build" in dockerfile_node(plan)
+    merge_plan(plan, {"node_engine": "^24", "npm_engine": "{npm}"})           # a failure that named no npm range
+    assert plan["node"] == 24 and not plan.get("ignore_engines")
+    merge_plan(plan, {"node_engine": ">=22", "npm_engine": "^7"})             # no line has npm 7: not enforced
+    assert plan["node"] == 24 and plan["ignore_engines"]
+    # ... and known before the first build, from the application's own engines.npm
+    node(tmp_path / "own", "", {"name": "svc", "scripts": {"start": "node index.js"}, "dependencies": {"express": "4"},
+                                "engines": {"node": ">=22.20.0", "npm": ">=10.9.0 <11"}}, {"index.js": SERVER})
+    assert plan_and_df(tmp_path / "own", "svc")[2]["node"] == 22
+    node(tmp_path / "pnpm", "", {"name": "svc", "scripts": {"start": "node index.js"}, "dependencies": {"express": "4"},
+                                 "engines": {"npm": "^10"}, "packageManager": "pnpm@9.1.0"}, {"index.js": SERVER})
+    assert plan_and_df(tmp_path / "pnpm", "svc")[2]["node"] == 24                # pnpm installs: npm's range does not count
+
+
+def _fmt_text(fr, caps):
+    from containerizer.verify import _fmt
+    return _fmt(fr["diagnosis"], caps)
+
 
 def test_engines_older_than_every_image_use_the_oldest_line(tmp_path):
     node(tmp_path, "", {"name": "svc", "engines": {"node": "10.x"}, "scripts": {"start": "node index.js"},
