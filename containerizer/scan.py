@@ -1511,6 +1511,8 @@ def scan(root: str | Path) -> Repo:
     from .scan_node import link_node_projects
     link_java_projects(projects, root)
     link_node_projects(projects, root)
+    from .scan_node import angular_apps
+    projects += angular_apps(projects, root)
 
     # Assign every file to the deepest project directory that contains it.
     by_dir: dict[Path, list[Project]] = {}

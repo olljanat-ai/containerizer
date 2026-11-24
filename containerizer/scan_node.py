@@ -221,6 +221,63 @@ def link_node_projects(projects: list[Project], root: Path) -> None:
             p.properties["LockNativeBuild"] = ",".join(sorted(native))
 
 
+def angular_apps(projects: list[Project], root: Path) -> list[Project]:
+    """The applications of an Angular workspace that has several (angular.json `projects` with a build target, not
+    libraries): each becomes a project of its own, built from the workspace with `ng build <name>`. The workspace's
+    package.json builds no application itself then (AngularWorkspace -> role library). A workspace with one
+    application stays one project, as before.
+
+    An application's project file is a file of its own folder (tsconfig.app.json, ...): the workspace's package.json
+    gives it its packages, lockfile and package manager. Properties: AngularProject (the name), AngularOutput (its
+    outputPath, in the workspace), AngularBuild (the package.json script that builds it, if one does),
+    WorkspaceRoot (the workspace's package.json)."""
+    from dataclasses import replace
+    out, taken = [], {q.path.resolve() for q in projects}
+    for p in [q for q in projects if q.kind_hint == "node"]:
+        ws = _json(p.dir / "angular.json").get("projects")
+        apps = []
+        for name, cfg in (ws.items() if isinstance(ws, dict) else []):
+            targets = (cfg.get("architect") or cfg.get("targets")) if isinstance(cfg, dict) else None
+            build = targets.get("build") if isinstance(targets, dict) else None
+            if isinstance(build, dict) and cfg.get("projectType", "application") == "application" \
+                    and re.fullmatch(r"[\w@][\w.@/-]{0,99}", str(name)):
+                apps.append((str(name), cfg, build))
+        if len(apps) < 2:
+            continue
+        scripts = {k: v for k, v in (p.manifest.get("scripts") or {}).items() if isinstance(v, str)}
+        made = []
+        for name, cfg, build in apps:
+            opts = build.get("options") if isinstance(build.get("options"), dict) else {}
+            base = (p.dir / str(cfg.get("root") or "")).resolve()
+            if not base.is_dir() or not base.is_relative_to(p.dir.resolve()):
+                continue
+            named = [p.dir / str(opts[k]) for k in ("tsConfig", "index", "browser", "main") if isinstance(opts.get(k), str)]
+            cands = [base / "tsconfig.app.json", base / "project.json", *named, base / "src" / "main.ts",
+                     base / "src" / "index.html"]
+            path = next((f for f in cands if f.is_file() and f.resolve() not in taken
+                         and f.resolve().is_relative_to(root.resolve())), None)
+            if path is None:
+                continue
+            taken.add(path.resolve())
+            op = opts.get("outputPath")
+            op = op if isinstance(op, str) else (op.get("base") if isinstance(op, dict) else None)
+            script = next((k for k, v in sorted(scripts.items()) if re.search(
+                r"\bng\s+build\b(?!.*--watch).*?(--project[=\s]+|\s)['\"]?" + re.escape(name) + r"['\"]?(\s|$)", v)
+                and "&&" not in v), "")
+            props = {k: v for k, v in p.properties.items() if k not in ("Workspaces", "StartScript", "BuildScript", "Bin",
+                                                                        "Main", "LibraryManifest")}
+            props.update(AngularProject=name, AngularOutput=str(op or f"dist/{name}").strip("/"), AngularBuild=script,
+                         AngularConfiguration="production" if "production" in (build.get("configurations") or {}) else "",
+                         WorkspaceRoot=p.rel, IndexHtml="true")
+            made.append(replace(p, path=path, name=name, assembly_name=name, properties=props, files=[],
+                                project_refs=list(p.project_refs), manifest={**p.manifest, "name": name, "scripts": {}},
+                                _text_cache={}))
+        if len(made) >= 2:
+            p.properties["AngularWorkspace"] = "true"
+            out += made
+    return out
+
+
 # --------------------------------------------------------------------------- lockfiles
 
 def _windows_only(os_list) -> bool:
