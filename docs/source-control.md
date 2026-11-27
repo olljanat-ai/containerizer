@@ -166,7 +166,8 @@ ContosoLegacy = https://pkgs.dev.azure.com/contoso/_packaging/legacy/nuget/v3/in
 
 The URL is the source's own (`index.json` for v3), and must be under the feed's URL (for Azure Artifacts, either
 host of the organization) so the proxy signs its requests;
-a line of names alone means the feed's URL itself. A name belongs to one feed only (names compare case-insensitively,
+a line of names alone means the feed's URL itself (not for an Azure Artifacts feed registered by its
+organization's URL, which is no NuGet source: give each name its `_packaging/<feed>/nuget/v3/index.json` URL). A name belongs to one feed only (names compare case-insensitively,
 as NuGet's do).
 
 Many repositories do not name the internal feed at all: no NuGet.Config, or one without package source mapping,

@@ -49,6 +49,11 @@ def parse(text: str, feed_url: str) -> list[tuple[str, str]]:
         if not line or line.startswith("#"):
             continue
         names, _, url = line.partition("=")
+        if not url.strip() and azure_alias(feed_url) and "/_packaging/" not in feed_url.casefold():
+            # the organization's packaging URL is no source: restore asks it as a v2 feed and gets 401
+            raise ValueError(f"NuGet source names: {names.strip()} needs its source URL, e.g. {names.strip()} = "
+                             f"{feed_url.rstrip('/')}/_packaging/<feed>/nuget/v3/index.json (the feed's URL "
+                             f"{feed_url} is the organization's, not a NuGet source)")
         url = url.strip() or feed_url
         p = urllib.parse.urlsplit(url)
         if p.scheme != "https" or not p.hostname or "@" in p.netloc or p.query or p.fragment \

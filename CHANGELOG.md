@@ -8,6 +8,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.5 (2026-11-27)
+
+- **Fixed: a NuGet source name without its URL on an Azure Artifacts feed gave builds a source that answers 401.**
+  A line of names alone in **NuGet source names** means the feed's URL, and an Azure Artifacts feed is registered by
+  its organization's URL (`https://pkgs.dev.azure.com/contoso/`), which is no NuGet source: restore asked it as a v2
+  feed (`https://contoso.pkgs.visualstudio.com/FindPackagesById()?id=...`) and the feed showed *Last use failed:
+  HTTP 401*. Such a line is now refused with the URL to give (`name = .../_packaging/<feed>/nuget/v3/index.json`,
+  on either host of the organization), and one saved earlier is no longer added to the builds: its names are
+  listed as missing until the feed is saved with the URL.
+
 ## 0.54.4 (2026-11-24)
 
 - **Fixed: a Node.js build that requires an npm version failed on Node.js 24.** A `package.json` with
