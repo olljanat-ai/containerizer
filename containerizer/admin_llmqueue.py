@@ -545,7 +545,7 @@ def rescan(conn, form: dict) -> Response:
 
 # the kinds of jobs, as the approval settings name them
 KIND_PLURAL = {"refactor": "refactoring orders", "review": "component reviews", "egress": "egress reviews",
-               "link": "link reviews"}
+               "link": "link reviews", "bugtry": "bug report tries"}
 
 
 def _kinds_text(kinds: list[str]) -> str:

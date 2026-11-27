@@ -166,3 +166,137 @@ def rep_app(conn) -> int:
     c = conn.cursor()
     c.execute("SELECT ApplicationId FROM cz.BugReport")
     return c.fetchone()[0]
+
+
+# --------------------------------------------------------------------------- let the LLM try
+
+def _source(tmp_path):
+    import subprocess
+    from tests.test_engine import web_app
+    root = tmp_path / "app"
+    web_app(root)
+    git = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *a], cwd=root,  # noqa: E731
+                                    check=True, capture_output=True)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "x")
+    commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, check=True).stdout.decode().strip()
+    return {"type": "local", "path": str(root)}, commit
+
+
+def test_the_outcome_of_a_try():
+    assert br.outcome_of("ok", None) == "already-fixed" and br.outcome_of("ok-external", "ok") == "already-fixed"
+    assert br.outcome_of("build-failed", None) == "nothing-to-try"
+    assert br.outcome_of("build-failed", "ok") == "helped" and br.outcome_of("run-failed", "ok-external") == "helped"
+    assert br.outcome_of("build-failed", "run-failed") == "further"
+    assert br.outcome_of("build-failed", "build-failed") == "not-helped" and br.outcome_of("run-failed", "run-failed") == "not-helped"
+
+
+def test_the_runner_tries_the_hint_and_says_whether_it_helped(tmp_path, monkeypatch):
+    from containerizer import refactor as rf
+    from containerizer import verify as vf
+    monkeypatch.setenv(rf.WORK_ENV, str(tmp_path / "scratch"))
+    monkeypatch.setattr(vf, "_run", lambda *a, **k: None)                       # docker info
+    source, commit = _source(tmp_path)
+    pl = {"bug_id": 3, "app": "shop", "component": "Web", "project": "src/Web/Web.csproj", "source": source,
+          "commit": commit, "hint": "it needs libgdiplus", "flagged_status": "run-failed"}
+    seen = {"prompts": [], "patches": []}
+
+    def ask(prompt, schema):
+        seen["prompts"].append(prompt)
+        return {"diagnosis": "GDI+ is missing; the patch installs it.",
+                "fix_json": json.dumps({"add_packages": ["libgdiplus"], "user": "root", "base": "full"})}
+
+    def verify(status_before, status_after):
+        def run(a, c, rules, work, patch):
+            seen["patches"].append(patch)
+            st = status_after if patch else status_before
+            return {"status": st, "attempts": [{"attempt": 1, "stage": "run" if st.startswith("run") else "build",
+                                                "status": st, "log_tail": "DllNotFoundException: libgdiplus"}]}
+        return run
+    out = br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("run-failed", "ok"))
+    res = out["result"]
+    assert res["outcome"] == "helped" and out["summary"].startswith("Helped")
+    assert res["llm"]["plan_patch"] == {"add_packages": ["libgdiplus"], "base": "full"}     # only build-plan keys
+    assert seen["patches"] == [None, {"add_packages": ["libgdiplus"], "base": "full"}]
+    assert "An administrator suggests what to try:\nit needs libgdiplus" in seen["prompts"][0]
+    assert "DllNotFoundException" in seen["prompts"][0] and res["before"]["status"] == "run-failed" and res["after"]["log_tail"] == ""
+    assert br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("build-failed", "build-failed"))["result"]["outcome"] == "not-helped"
+    assert br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("build-failed", "run-failed"))["result"]["outcome"] == "further"
+    # it already works with this version: the LLM is not asked
+    seen["prompts"].clear()
+    assert br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("ok", "ok"))["result"]["outcome"] == "already-fixed"
+    assert not seen["prompts"]
+    none = br.try_handler({"JobId": 9, "Payload": pl}, ask=lambda p, s: {"diagnosis": "code must change", "fix_json": "{}"},
+                          verify=verify("build-failed", "ok"))
+    assert none["result"]["outcome"] == "nothing-to-try" and "after" not in none["result"]
+    gone = br.try_handler({"JobId": 9, "Payload": {**pl, "project": "src/Other/Other.csproj"}}, ask=ask, verify=verify("ok", "ok"))
+    assert gone["result"]["outcome"] == "not-tried" and "not in the source" in gone["summary"]
+    lost = br.try_handler({"JobId": 9, "Payload": {**pl, "commit": "0" * 40}}, ask=ask, verify=verify("ok", "ok"))
+    assert lost["result"]["outcome"] == "not-tried" and not list((tmp_path / "scratch").glob("bugtry-*"))
+
+
+def test_verification_takes_a_plan_patch(tmp_path, monkeypatch):
+    from containerizer import verify as vf
+    from containerizer.assess import assess
+    from containerizer.rules import load_rules
+    from tests.test_engine import web_app
+    web_app(tmp_path / "app")
+    a = assess(tmp_path / "app")
+    plans = []
+    monkeypatch.setattr(vf, "build", lambda a, c, plan, workdir, timeout: plans.append(plan) or (False, "boom", "t"))
+    monkeypatch.setattr(vf, "diagnose", lambda *x, **k: None)
+    try:
+        vf.verify_component(a, a.components[0], load_rules(), work=tmp_path / "w", plan_patch={"env": {"TRY": "1"}})
+    except Exception:  # noqa: BLE001      the fake build gives nothing to diagnose
+        pass
+    assert plans and plans[0]["env"]["TRY"] == "1"
+
+
+def test_tries_on_the_page_and_in_the_export():
+    pytest.importorskip("jwt")
+    from test_refactor import _get, _post
+    from test_refactor import adm as adm_fixture
+    adm = adm_fixture.__wrapped__()
+    rows = [{"BugId": 3, "ApplicationId": 7, "ComponentId": 5, "App": "shop", "Component": "Api", "VerifyStatus": "run-failed",
+             "Status": "open", "Note": None, "CreatedBy": "john.doe@example.com", "CreatedAt": datetime(2026, 11, 27, 12, 0),
+             "ExportedAt": None, "Bytes": 900}]
+    case = {"application": "shop", "component": {"name": "Api", "project": "src/Api/Api.csproj"},
+            "verification": {"status": "run-failed", "detail": "x"}, "attempts": []}
+    jobs = [{"JobId": 21, "Status": "answered", "Error": None, "Note": None, "QueuedAt": datetime(2026, 11, 27, 12, 5),
+             "FinishedAt": None, "RequestedBy": "john.doe@example.com",
+             "Payload": json.dumps({"bug_id": 3, "hint": "add <libgdiplus> for Contoso"}),
+             "Result": json.dumps({"outcome": "helped", "before": {"status": "run-failed"}, "after": {"status": "ok"},
+                                   "llm": {"diagnosis": "GDI+ is missing at Contoso", "plan_patch": {"add_packages": ["libgdiplus"]}}})},
+            {"JobId": 22, "Status": "queued", "Error": None, "Note": None, "QueuedAt": datetime(2026, 11, 27, 12, 9),
+             "FinishedAt": None, "RequestedBy": "john.doe@example.com", "Payload": json.dumps({"bug_id": 3, "hint": "second"}),
+             "Result": None},
+            {"JobId": 23, "Status": "answered", "Error": None, "Note": None, "QueuedAt": None, "FinishedAt": None,
+             "RequestedBy": None, "Payload": json.dumps({"bug_id": 99, "hint": "another report"}), "Result": "{}"}]
+    adm.conn.answers = {r"DATALENGTH\(DataGz\)": rows, r"SELECT Keywords FROM cz.BugReportSettings": [{"Keywords": "contoso"}],
+                        r"WHERE Kind = N'bugtry'": jobs,
+                        r"SELECT BugId, Status, Note, CreatedAt, DataGz": [
+                            {"BugId": 3, "Status": "open", "Note": "", "CreatedAt": datetime(2026, 11, 27, 12, 0),
+                             "DataGz": gzip.compress(json.dumps(case).encode())}],
+                        r"FROM cz.BugReport b JOIN cz.Application": [
+                            {"BugId": 3, "ApplicationId": 7, "AssessmentId": 70, "App": "shop", "Component": "Api",
+                             "DataGz": gzip.compress(json.dumps(case).encode()), "RepositoryUrl": "https://example.com/r",
+                             "SourcePath": None, "SourceKey": "k", "SourceCommit": "a" * 40}],
+                        r"FROM cz.OrgRepository": [{"ScanId": 4, "AppName": "shop"}],
+                        r"EXEC cz.QueueLlmJob": [{"JobId": 31}]}
+    a = adm.sessions.create("a@example.com", "A", True)
+    page = _get(adm, a, "/admin/bugs").body
+    assert "Let the LLM try" in page and "action='/admin/bugs/3/try'" in page and "another report" not in page
+    assert "Helped: it builds and runs with the change" in page and "add &lt;libgdiplus&gt; for Contoso" in page
+    assert "Waiting in the LLM queue" in page and "&quot;libgdiplus&quot;" in page
+    data = json.loads(_get(adm, a, "/admin/bugs/export.json").body)
+    t = data["reports"][0]["tries"]
+    assert [x["state"] for x in t] == ["done", "queued"] and t[0]["outcome"] == "helped" and "job" not in t[0]
+    assert t[0]["llm"]["plan_patch"] == {"add_packages": ["libgdiplus"]} and "contoso" not in json.dumps(t).casefold()
+    r = _post(adm, a, "/admin/bugs/3/try", Hint="  use the full image  ")
+    assert r.status in (302, 303) and "Queued" in dict(r.headers)["Location"]
+    sql, params = adm.conn.sql(r"EXEC cz.QueueLlmJob")[-1]
+    payload = json.loads([p for p in params if isinstance(p, str) and p.startswith("{")][-1])
+    assert payload["hint"] == "use the full image" and payload["bug_id"] == 3 and payload["project"] == "src/Api/Api.csproj"
+    assert payload["source"]["type"] == "org-clone" and payload["commit"] == "a" * 40 and "bugtry" in params
+    assert "Write+what" in dict(_post(adm, a, "/admin/bugs/3/try", Hint=" ").headers)["Location"].replace("%20", "+")

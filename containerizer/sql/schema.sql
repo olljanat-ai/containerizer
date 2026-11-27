@@ -3662,6 +3662,15 @@ CREATE TABLE [${schema}].BugReportSettings (
     Keywords nvarchar(max) NULL
 );
 GO
+-- (with 65) the LLM queue's kind `bugtry`: a fix an administrator asked the LLM to try for a report
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob') AND definition NOT LIKE N'%bugtry%')
+    ALTER TABLE [${schema}].LlmJob DROP CONSTRAINT CK_LlmJob_Kind;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+    ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review', N'refactor', N'egress', N'link', N'bugtry'));
+GO
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BugReport TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE ON [${schema}].BugReportSettings TO [${schema}_admin];
 GO

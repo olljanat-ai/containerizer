@@ -316,6 +316,16 @@ def link_handler(job: dict) -> dict:
 
 
 register(LINK, "Link review", link_handler, "link-queued")
+BUGTRY = "bugtry"
+
+
+def bugtry_handler(job: dict) -> dict:
+    """A fix an administrator asked the LLM to try for a flagged build or run failure (bugreports.try_handler)."""
+    from .bugreports import try_handler
+    return try_handler(job)
+
+
+register(BUGTRY, "Bug report try", bugtry_handler, "bugtry-queued")
 
 
 # --------------------------------------------------------------------------- component reviews: what, how urgent

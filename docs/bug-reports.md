@@ -34,6 +34,39 @@ once it is dealt with, **JSON** exports one report alone, and **Remove** deletes
 ![Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords](images/admin-bug-reports.png#only-light){ .cz-shot }
 ![Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords](images/admin-bug-reports-dark.png#only-dark){ .cz-shot }
 
+## Let the LLM try
+
+Often you already have an idea of what would fix the case. Write it under the report in **Let the LLM try**, in your
+own words (*build on the full image and add libgdiplus*), and Containerizer tests the idea for you:
+
+![Let the LLM try: a hint per report, the LLM's change to the build plan and whether it helped](images/admin-bug-tries.png#only-light){ .cz-shot }
+![Let the LLM try: a hint per report, the LLM's change to the build plan and whether it helped](images/admin-bug-tries-dark.png#only-dark){ .cz-shot }
+
+1. The LLM queue (a job of the kind *Bug report try*; approval and order as for the other kinds) takes the
+   application's source at the flagged commit from the scan worker's clone.
+2. It builds and runs the component as it is, with the version installed now. If that works, the result is
+   **Already fixed** and the LLM is not asked.
+3. It asks the LLM for a change of the **build plan** that follows your words: the base image, OS packages,
+   environment variables, writable folders, build arguments, files removed in the build, the runtime line. Never
+   the application's code, and never the Dockerfile's text directly.
+4. It builds and runs the component again with that change, and compares.
+
+| Result | Meaning |
+|---|---|
+| **Helped** | It failed without the change, and builds and runs with it |
+| **Got further** | The build failed without the change; with it the build passes and the run fails |
+| **Did not help** | It fails with the change as well |
+| **Already fixed** | It builds and runs with this version without any change |
+| **Nothing to try** | The LLM found no build-plan change that does what you wrote (its reasoning is shown) |
+| **Not tried** | The source at the flagged commit is gone, the component is no longer built in Linux, or Docker is away |
+
+Nothing is changed for good: the application's next scan builds it as before. The result is feedback, kept with
+the report: the export carries every try's words, the LLM's diagnosis and change, and the statuses before and
+after, so whoever fixes Containerizer sees what was tried and whether it worked.
+
+The try needs an LLM (Admin → Source control & LLM) and an organization scan on this machine that still has the
+commit; scan and flag the application again when it has moved on.
+
 ## Anonymization keywords
 
 Give the words the export must not carry, one per line: company, product, project, host and people's names.
@@ -65,7 +98,11 @@ Open the file before you send it: a name that is not listed stays.
    "component": {"name": "maple-3f9a.Api", "project": "src/maple-3f9a.Api/maple-3f9a.Api.csproj", "role": "web"},
    "verification": {"status": "build-failed", "detail": "..."},
    "attempts": [{"attempt": 1, "stage": "build", "dockerfile_and_command": "...", "log": "..."}],
-   "findings": [{"rule": "cert-store", "severity": "config", "title": "...", "evidence": "..."}]
+   "findings": [{"rule": "cert-store", "severity": "config", "title": "...", "evidence": "..."}],
+   "tries": [{"hint": "build on the full image and add libgdiplus", "state": "done", "outcome": "helped",
+              "before": {"status": "run-failed", "steps": "...", "log_tail": "..."},
+              "llm": {"diagnosis": "...", "plan_patch": {"base": "full", "add_packages": ["libgdiplus"]}},
+              "after": {"status": "ok", "steps": "...", "log_tail": ""}}]
   }
  ]
 }

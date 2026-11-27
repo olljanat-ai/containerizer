@@ -12,6 +12,11 @@ Containerizer.
   in the export by a random word, the same word for the same keyword within one file, so the case stays readable.
   Matching ignores case. The mapping is not in the file and not kept. Secrets are already masked in the stored logs.
 
+- **Let the LLM try** (a report on the Bug reports page): the administrator writes what to try; the LLM queue
+  (kind `bugtry`, `try_handler`) builds and runs the component as it is, asks the LLM for a build-plan change that
+  follows the hint, builds and runs again with it, and records whether that helped. The tries are part of the
+  export: what was suggested, what the LLM changed, and the result, for whoever fixes the tool.
+
 Source file contents are not in a report: logs, the Dockerfile and finding evidence can still name things, which is
 what the keywords are for.
 """
@@ -29,6 +34,19 @@ BASE = "/admin/bugs"
 MAX_LOG = 300_000                 # characters of one attempt's log kept in a report (its start and its end)
 MAX_NOTE = 1000
 MAX_KEYWORDS = 200
+MAX_HINT = 2000
+KIND = "bugtry"
+PRIORITY = 1700                   # a person asked for it: before the automatic reviews
+OK = ("ok", "ok-external")
+OUTCOME_TEXT = {"helped": "Helped: it builds and runs with the change",
+                "further": "Got further: it builds with the change, the run still fails",
+                "not-helped": "Did not help: it fails with the change too",
+                "already-fixed": "Already fixed: it builds and runs with this version, without a change",
+                "nothing-to-try": "Nothing to try: the LLM found no build-plan change for it",
+                "not-tried": "Not tried"}
+TRY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["diagnosis", "fix_json"],
+              "properties": {"diagnosis": {"type": "string", "description": "what fails and what the change does, two sentences"},
+                             "fix_json": {"type": "string", "description": "JSON object: the build-plan patch, or {} when no key can do it"}}}
 NOTICES = {"flagged": ("ok", "Flagged as a suspected Containerizer bug: it is on Admin → Bug reports."),
            "unflagged": ("ok", "The flag was removed."),
            "nothing": ("bad", "This component has no failed build or run in its latest scan."),
@@ -200,6 +218,212 @@ def notice_html(code: str) -> str:
     return f"<div class='notice notice-{kind}' role='status'>{e(text)}</div>"
 
 
+# --------------------------------------------------------------------------- let the LLM try
+
+def queue_try(conn, bug_id: int, hint: str) -> tuple[int | None, str]:
+    """Queue a try for a report: (job id or 0 when the same one waits, "") or (None, why not)."""
+    import hashlib
+    from .admin_refactor import order_source
+    from .llmqueue import SqlJobQueue
+    hint = (hint or "").strip()[:MAX_HINT]
+    if not hint:
+        return None, "Write what the LLM should try."
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT b.BugId, b.ApplicationId, b.AssessmentId, b.App, b.Component, b.DataGz, a.RepositoryUrl, a.SourcePath, "
+                "a.SourceKey, aa.SourceCommit FROM cz.BugReport b JOIN cz.Application a ON a.ApplicationId = b.ApplicationId "
+                "LEFT JOIN cz.ApplicationAssessment aa ON aa.AssessmentId = b.AssessmentId WHERE b.BugId = %s", (int(bug_id),))
+    rows = cur.fetchall()
+    if not rows:
+        return None, "The report's application is no longer there."
+    r = rows[0]
+    source = order_source(conn, {"RepositoryUrl": r.get("RepositoryUrl"), "SourcePath": r.get("SourcePath")})
+    if source is None or not r.get("SourceCommit"):
+        return None, ("No organization scan on this machine has the application's source at the flagged commit: "
+                      "scan it again and flag it again.")
+    try:
+        case = json.loads(gzip.decompress(bytes(r["DataGz"])).decode("utf-8"))
+    except (OSError, EOFError, ValueError, TypeError):
+        return None, "The report cannot be read."
+    project = (case.get("component") or {}).get("project")
+    payload = {"bug_id": int(r["BugId"]), "app": r["App"], "application_id": r["ApplicationId"], "component": r["Component"],
+               "project": project, "source": source, "commit": r["SourceCommit"], "hint": hint,
+               "flagged_status": (case.get("verification") or {}).get("status")}
+    key = hashlib.sha256(f"{r['BugId']}|{hint}".encode()).hexdigest()
+    job = {"Kind": KIND, "Reason": None, "App": r["App"], "Repository": r["App"], "SourceKey": r.get("SourceKey"),
+           "ApplicationId": r["ApplicationId"], "AssessmentId": r["AssessmentId"], "Component": r["Component"],
+           "ProjectPath": project, "RuleVerdict": None, "Priority": PRIORITY, "DedupeKey": key, "Model": None,
+           "RequestedBy": None, "InputChars": 12000 + len(hint), "Payload": payload}
+    return SqlJobQueue(None).add_with(conn, job), ""
+
+
+def try_prompt(app: str, component: str, kind: str, plan: dict, stage: str, log_tail: str, hint: str) -> str:
+    from .ai import PLAN_HELP, PLAN_RULES
+    return (f"A generated container for {app}/{component} failed at the {stage} stage.\n\nBuild plan:\n"
+            f"{json.dumps({k: v for k, v in plan.items() if k not in ('applied', 'reasons')}, indent=1, default=str)[:6000]}\n\n"
+            f"{PLAN_HELP.get(kind, PLAN_HELP['dotnet'])}\n{PLAN_RULES}\n\nLog tail:\n{log_tail[-8000:]}\n\n"
+            f"An administrator suggests what to try:\n{hint}\n\nGive the build-plan patch that carries out the suggestion "
+            "(only the keys above; {} when none of them can do it), and say in the diagnosis what fails and what the "
+            "patch does.")
+
+
+def _result_of(r: dict) -> dict:
+    """What a verification left, for the report: the status, the steps and the end of the last log."""
+    last = (r.get("attempts") or [{}])[-1]
+    return {"status": r.get("status"), "steps": "; ".join(f"{h.get('stage')} {h.get('rule') or h.get('status')}"
+                                                        for h in r.get("attempts") or [])[:600],
+            "log_tail": "" if r.get("status") in OK else str(last.get("log_tail") or "")[-3000:]}
+
+
+def outcome_of(before: str, after: str | None) -> str:
+    if before in OK:
+        return "already-fixed"
+    if after is None:
+        return "nothing-to-try"
+    if after in OK:
+        return "helped"
+    return "further" if before == "build-failed" and after != "build-failed" else "not-helped"
+
+
+def try_handler(job: dict, ask=None, verify=None) -> dict:
+    """The LLM queue's handler of `bugtry` jobs: build and run the component as it is; if it still fails, ask the LLM
+    for a build-plan patch that follows the administrator's hint and build and run with it. `ask(prompt, schema)` and
+    `verify(a, c, rules, work, plan_patch)` are replaced in tests."""
+    import os
+    import shutil
+    import tempfile
+    from pathlib import Path
+    from . import ai
+    from . import refactor as rf
+    from . import verify as vf
+    from .assess import assess
+    from .generate import buildable, make_plan
+    from .rules import load_rules
+    pl = job["Payload"]
+    progress = job.get("_progress") or (lambda text: None)
+    ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature="bugtry-queued",
+                                                     max_tokens=ai.SHORT_ANSWER_TOKENS))
+    verify = verify or (lambda a, c, rules, work, patch: vf.verify_component(a, c, rules, work=work, plan_patch=patch))
+    base = Path(os.environ.get(rf.WORK_ENV) or tempfile.gettempdir())
+    base.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=f"bugtry-{int(job.get('JobId') or 0)}-", dir=base))
+    result = {"bug_id": pl.get("bug_id"), "hint": pl.get("hint"), "flagged_status": pl.get("flagged_status"),
+              "outcome": "not-tried"}
+
+    def done(reason: str = "") -> dict:
+        if reason:
+            result["reason"] = reason[:600]
+        text = OUTCOME_TEXT[result["outcome"]] + (f" ({reason})" if reason and result["outcome"] == "not-tried" else "")
+        return {"result": result, "summary": text[:400], "note": None}
+    try:
+        progress("preparing the source")
+        repo, app_root = rf.checkout(pl["source"], pl.get("commit"), work / "src")
+        a = assess(app_root)
+        a.repo.name = f"bugtry-{int(pl.get('bug_id') or 0)}"
+        c = next((x for x in a.components if x.project.rel == pl.get("project")), None)
+        if c is None or not buildable(c):
+            return done("the component is not one this version builds in a Linux container"
+                        if c is not None else "the component's project is not in the source")
+        rules = load_rules()
+        try:
+            vf._run(["docker", "info"], 60)
+        except Exception as ex:  # noqa: BLE001
+            return done(f"Docker is not available: {ex}")
+        progress("building and running it as it is")
+        before = verify(a, c, rules, work / "before", None)
+        result["before"] = _result_of(before)
+        if before.get("status") in OK:
+            result["outcome"] = "already-fixed"
+            return done()
+        rf._stop_if_cancelled()
+        progress("asking the LLM what to change")
+        kind = c.project.kind_hint if c.project.kind_hint in ai.PLAN_KEYS and c.role != "spa" else "dotnet"
+        last = (before.get("attempts") or [{}])[-1]
+        answer = ask(try_prompt(a.name, c.name, kind, make_plan(a, c, rules), str(last.get("stage") or "build"),
+                                str(last.get("log_tail") or ""), str(pl.get("hint") or "")), TRY_SCHEMA)
+        try:
+            fix = json.loads(answer.get("fix_json") or "{}")
+        except ValueError:
+            fix = {}
+        fix = {k: v for k, v in fix.items() if k in ai.PLAN_KEYS[kind]} if isinstance(fix, dict) else {}
+        result["llm"] = {"diagnosis": str(answer.get("diagnosis") or "")[:1500], "plan_patch": fix}
+        try:
+            result["llm"]["model"] = ai.model_name(None)
+        except Exception:  # noqa: BLE001
+            pass
+        if not fix:
+            result["outcome"] = "nothing-to-try"
+            return done()
+        rf._stop_if_cancelled()
+        progress("building and running it with the change")
+        after = verify(a, c, rules, work / "after", fix)
+        result["after"] = _result_of(after)
+        result["outcome"] = outcome_of(str(before.get("status")), str(after.get("status")))
+        return done()
+    except rf.RefactorError as ex:
+        return done(str(ex))
+    finally:
+        if not os.environ.get("CONTAINERIZER_KEEP_REFACTOR_WORK"):
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def tries(conn, bug_ids=None) -> dict:
+    """{BugId: [the tries of the report, oldest first]}: the hint, where the job is, and its result."""
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT JobId, Status, Error, Note, Payload, Result, QueuedAt, FinishedAt, RequestedBy FROM cz.LlmJob "
+                "WHERE Kind = N'bugtry' ORDER BY JobId")
+    out: dict = {}
+    for r in cur.fetchall():
+        try:
+            pl, res = json.loads(r.get("Payload") or "{}"), json.loads(r.get("Result") or "{}")
+        except ValueError:
+            continue
+        bug = pl.get("bug_id")
+        if bug is None or (bug_ids is not None and bug not in bug_ids):
+            continue
+        state = {"answered": "done", "failed": "failed", "skipped": "cancelled"}.get(r["Status"], r["Status"])
+        t = {"job": int(r["JobId"]), "hint": pl.get("hint") or "", "state": state,
+             "asked_at": r["QueuedAt"].isoformat() if r.get("QueuedAt") else None, "asked_by": r.get("RequestedBy")}
+        if r["Status"] == "answered":
+            t.update({k: res.get(k) for k in ("outcome", "reason", "before", "llm", "after") if res.get(k) is not None})
+        elif r["Status"] == "failed":
+            t["error"] = r.get("Error") or ""
+        out.setdefault(int(bug), []).append(t)
+    return out
+
+
+def tries_html(bug: dict, items: list[dict], csrf: str) -> str:
+    """A report's tries and the form for the next one (the Bug reports page)."""
+    rows = []
+    for t in items:
+        if t["state"] == "done":
+            oc = t.get("outcome") or "not-tried"
+            cls = {"helped": "good", "already-fixed": "good", "not-helped": "bad"}.get(oc, "")
+            head = (f"<b class='{cls}'>{e(OUTCOME_TEXT.get(oc, oc))}</b>"
+                    + (f" <span class='muted'>({e(t['reason'])})</span>" if t.get("reason") else ""))
+            llm = t.get("llm") or {}
+            more = ""
+            if llm:
+                more += (f"<div class='small'>{e(llm.get('diagnosis') or '')}</div>"
+                         + (f"<pre class='code'>{e(json.dumps(llm.get('plan_patch'), indent=1))}</pre>" if llm.get("plan_patch") else ""))
+            if (t.get("after") or {}).get("log_tail"):
+                more += f"<details><summary class='small'>The log with the change</summary><pre class='code'>{e(t['after']['log_tail'])}</pre></details>"
+        else:
+            head = {"queued": "Waiting in the LLM queue", "approval": "Waiting for approval on the LLM queue page",
+                    "running": "Running", "failed": "Failed", "cancelled": "Cancelled"}.get(t["state"], t["state"])
+            head = f"<b>{e(head)}</b>" + (f" <span class='muted'>{e(t.get('error') or '')}</span>" if t.get("error") else "")
+            more = ""
+        rows.append(f"<li><span class='small muted'><a href='/admin/llm-queue/{int(t['job'])}'>#{int(t['job'])}</a></span> "
+                    f"“{e(t['hint'])}”<br>{head}{more}</li>")
+    form = (f"<form method='post' action='{BASE}/{int(bug['BugId'])}/try' class='formrow'>{csrf}"
+            "<textarea name='Hint' rows='2' maxlength='2000' required style='min-width:520px' aria-label='What the LLM should try' "
+            "placeholder='What should the LLM try? For example: build on the full image and add the package libgdiplus'></textarea>"
+            "<button class='secondary'>Let the LLM try</button></form>") if bug["Status"] == "open" else ""
+    if not rows and not form:
+        return ""
+    return (f"<section class='diff' style='padding:10px 14px'><b>#{int(bug['BugId'])} {e(bug['App'])} / {e(bug['Component'])}</b>"
+            + (f"<ul class='checks'>{''.join(rows)}</ul>" if rows else "") + form + "</section>")
+
+
 # --------------------------------------------------------------------------- the export
 
 def keywords_text(conn) -> str:
@@ -224,7 +448,13 @@ def export(conn, ids: list[int] | None = None, rand=None, now: datetime | None =
             continue
         bugs.append({"id": int(r["BugId"]), "status": r["Status"],
                      "flagged_at": r["CreatedAt"].isoformat() if r.get("CreatedAt") else None,
-                     "note": r.get("Note") or "", **case})
+                     "note": r.get("Note") or "", **case, "tries": []})
+    try:                                    # what the LLM was asked to try, and whether it helped
+        done = tries(conn, {b["id"] for b in bugs})
+        for b in bugs:
+            b["tries"] = [{k: v for k, v in t.items() if k not in ("job", "asked_by")} for t in done.get(b["id"], [])]
+    except Exception:  # noqa: BLE001      no LLM queue in this database
+        pass
     keywords = parse_keywords(keywords_text(conn))
     replace, counts = anonymizer(keywords, rand)
     bugs = anonymize(bugs, replace)
@@ -282,6 +512,17 @@ def show(adm, conn, s, a, flash: str = "") -> "Response":  # noqa: F821
     else:
         body.append("<p class='muted'>Nothing is flagged. On an application's page, a component whose build or run failed "
                     "has <b>Flag as a Containerizer bug</b> in its <i>Build and run</i> block.</p>")
+    try:
+        done = tries(conn, {int(r["BugId"]) for r in rows})
+    except Exception:  # noqa: BLE001
+        done = {}
+    blocks = "".join(tries_html(r, done.get(int(r["BugId"]), []), csrf) for r in rows)
+    if blocks:
+        body.append("<h2 id='tries'>Let the LLM try</h2><p class='small'>Write what to try for a report. The LLM queue builds "
+                    "and runs the component as it is, asks the LLM for a change of the build plan (base image, packages, "
+                    "environment, writable folders, build arguments; never the application's code) that follows your "
+                    "words, and builds and runs it again with that change. Whether it helped is kept with the report and "
+                    "goes into the export.</p>" + blocks)
     n = len(parse_keywords(kw))
     body.append("<h2 id='export'>Export</h2>"
                 + (f"<p><a class='button' href='{BASE}/export.json' download>Export JSON</a> <span class='muted small'>"
@@ -347,6 +588,17 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
             conn.rollback()
             print(f"bug report of component {cid}: {type(ex).__name__}: {ex}", file=sys.stderr)
             return back("unavailable")
+    if len(parts) == 3 and re.fullmatch(r"\d{1,9}", parts[1]) and parts[2] == "try":
+        from urllib.parse import quote
+        try:
+            jid, why = queue_try(conn, int(parts[1]), form.get("Hint", [""])[0])
+            conn.commit()
+        except Exception as ex:  # noqa: BLE001
+            conn.rollback()
+            print(f"bug report try {parts[1]}: {type(ex).__name__}: {ex}", file=sys.stderr)
+            jid, why = None, "The LLM queue could not take it."
+        msg = why or ("Queued: the LLM queue page shows how far it is." if jid else "The same try already waits.")
+        return redirect(f"{BASE}?msg={quote(msg)}#tries")
     if len(parts) == 3 and re.fullmatch(r"\d{1,9}", parts[1]) and parts[2] in ("close", "reopen", "remove"):
         cur = conn.cursor()
         if parts[2] == "remove":
