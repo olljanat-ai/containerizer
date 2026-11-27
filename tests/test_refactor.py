@@ -476,7 +476,11 @@ def test_queue_handler_result_shape(shop, tmp_path, monkeypatch):
     progress = []
     pl = _payload(shop, verify=False)
     out = lq.JOB_KINDS["refactor"].handler({"JobId": 5, "Payload": pl, "_progress": progress.append})
-    assert set(out) == {"result", "summary", "note"} and calls == [rf.SYSTEM]
+    assert set(out) == {"result", "summary", "note", "snapshot"} and calls == [rf.SYSTEM]
+    from containerizer import codebrowse                    # the code browser's files, kept with the order
+    snap = codebrowse.Snapshot(out["snapshot"])
+    changed = [p for p, f in snap.files.items() if f["st"]]
+    assert len(changed) == 1 and snap.text(changed[0], "patched") != snap.text(changed[0], "original")
     assert out["summary"] == "not built: 2 of 2 findings fixed, 1 file changed"     # applies; Docker was not there
     assert out["note"].startswith("the patch applies; verification was off")
     assert out["result"]["status"] == "applies-only" and out["result"]["patch"].startswith("From ")
