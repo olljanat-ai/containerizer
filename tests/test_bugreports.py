@@ -160,7 +160,6 @@ def test_flagging_and_exporting_in_sql_server():
     assert "contoso" not in json.dumps(data["reports"]).casefold() and data["anonymized"]["replacements"] == 2
     assert br.flagged(type("A", (), {"connect_admin": lambda self: as_("cz_bug_admin")})(), {"ApplicationId": rep_app(adm)}) == {api: bug}
     # a try is a job of the LLM queue's kind bugtry, and its result comes back with the report
-    from containerizer import llmprompts
     from containerizer.llmqueue import SqlJobQueue
     jid = SqlJobQueue(None).add_with(adm, {"Kind": "bugtry", "App": "contoso-shop", "ApplicationId": rep_app(adm),
                                            "Component": "Api", "Priority": 1700, "DedupeKey": "t1", "RequestedBy": "john.doe@example.com",
@@ -207,14 +206,9 @@ def test_flagging_and_exporting_in_sql_server():
     c.execute("UPDATE cz.BugReport SET Status = N'open', StatusNote = N'reopened by john.doe@example.com' WHERE BugId = %s", (newer,))
     adm.commit()
     assert br.auto_resolve(adm) == []                                            # a person reopened it: it stays open
-    # a replaced system prompt: the administrator writes it, the writer (worker, queue runner) reads it
-    assert llmprompts.save(adm, "refactor", "Keep every appender.", "john.doe@example.com") == "saved"
-    adm.commit()
-    assert llmprompts.load(as_("cz_bug_writer"))["refactor"]["text"] == "Keep every appender."
-    assert br.export(adm)["replaced_system_prompts"] == {"refactor": "Keep every appender."}
-    assert llmprompts.save(adm, "refactor", "", "x") == "default"
-    adm.commit()
-    assert llmprompts.load(adm) == {}
+    # 0.54.7's table of appliance-wide prompts is gone (schema 66)
+    c.execute("SELECT OBJECT_ID(N'cz.LlmPrompt', N'U')")
+    assert c.fetchone()[0] is None
     for login in ("cz_bug_reader", "cz_bug_writer"):
         with pytest.raises(Exception):
             x = as_(login).cursor()
@@ -467,65 +461,95 @@ def test_tries_on_the_page_and_in_the_export():
     assert "Write+what" in dict(_post(adm, a, "/admin/bugs/3/try", Hint=" ").headers)["Location"].replace("%20", "+")
 
 
-# --------------------------------------------------------------------------- system prompts
+# --------------------------------------------------------------------------- system prompts, per try
 
-def test_a_replaced_system_prompt_is_what_the_llm_gets(monkeypatch, tmp_path):
-    from containerizer import ai, llmprompts
+def test_a_try_may_replace_its_system_prompts_and_nothing_else_uses_them(tmp_path, monkeypatch):
+    from pathlib import Path
+    from containerizer import ai
     from containerizer import refactor as rf
-    from test_llm_queue import FakeConn
-    known = llmprompts.prompts()
-    assert set(known) == {"assessment", "refactor", "egress", "links", "replatform"} and known["refactor"][2] == rf.SYSTEM
-    monkeypatch.setattr(ai, "CACHE", tmp_path / "cache")
-    monkeypatch.setenv("CONTAINERIZER_AI_BACKEND", "api")
-    seen = []
-    monkeypatch.setattr(ai, "_ask_api", lambda prompt, schema, model, effort, system: seen.append(system) or ({"a": 1}, {}))
-    conn = FakeConn({r"FROM cz.LlmPrompt": [{"Name": "refactor", "Text": "Keep every log4net appender.", "UpdatedBy": "a",
-                                             "UpdatedAt": datetime(2026, 11, 27)},
-                                            {"Name": "gone", "Text": "x", "UpdatedBy": "a", "UpdatedAt": None}]})
-    try:
-        before = ai.cache_key("p", {}, system=rf.SYSTEM)
-        assert llmprompts.apply(conn) == 1
-        ai.ask_json("p", {}, system=rf.SYSTEM)
-        ai.ask_json("p2", {})                                                    # another prompt: untouched
-        assert seen == ["Keep every log4net appender.", ai.SYSTEM]
-        assert ai.cache_key("p", {}, system=rf.SYSTEM) != before                 # another prompt, another answer
-        assert llmprompts.apply(FakeConn()) == 0 and ai.system_prompt(rf.SYSTEM) == rf.SYSTEM
-    finally:
-        ai.set_system_overrides(None)
-    c = FakeConn()
-    assert llmprompts.save(c, "refactor", "  New text \r\n", "john.doe@example.com") == "saved"
-    assert c.sql(r"INSERT cz.LlmPrompt")[-1][1] == ("refactor", "New text", "john.doe@example.com")
-    assert llmprompts.save(c, "refactor", rf.SYSTEM, "x") == "default" and llmprompts.save(c, "refactor", " ", "x") == "default"
-    assert len(c.sql(r"INSERT cz.LlmPrompt")) == 1 and len(c.sql(r"DELETE FROM cz.LlmPrompt")) == 3
-    assert llmprompts.save(c, "nope", "x", "x") == "bad"
+    from containerizer import verify as vf
+    own = br.builtin_prompts()
+    assert own == {"plan": ai.SYSTEM, "code": rf.SYSTEM}
+    assert br.replaced_prompts({"plan": ai.SYSTEM + "\n", "code": "  Keep every appender.\r\n"}) == {"code": "Keep every appender."}
+    assert br.replaced_prompts(None) == {} and br.replaced_prompts({"plan": "", "other": "x"}) == {}
+    monkeypatch.setenv(rf.WORK_ENV, str(tmp_path / "scratch"))
+    monkeypatch.setattr(vf, "_run", lambda *a, **k: None)
+    source, commit = _source(tmp_path)
+    prog = next(p for p in Path(source["path"]).rglob("Program.cs")).relative_to(source["path"]).as_posix()
+    text = (Path(source["path"]) / prog).read_text()
+    line = next(l for l in text.splitlines() if l.strip() and text.count(l) == 1)
+    seen = {"systems": [], "patches": []}
+
+    def ask(prompt, schema, system=None):
+        seen["systems"].append(system)
+        if "files" in schema["properties"]:
+            return {"diagnosis": "d", "fix_json": "{}", "files": [prog]}
+        seen["edited"] = True
+        return {"edits": [{"file": prog, "find": line, "replace": line + "\n// x"}]}
+    pl = {"bug_id": 3, "app": "shop", "component": "Web", "project": "src/Web/Web.csproj", "source": source, "commit": commit,
+          "hint": "h", "code_lines": 50, "system_prompts": {"plan": "Diagnose briefly. Answer with JSON.", "code": rf.SYSTEM}}
+    res = br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=_fake_verify(seen, "run-failed", "ok"))["result"]
+    # the replaced one is used; the one left as built-in is the built-in; the result says which were replaced
+    assert seen["systems"] == ["Diagnose briefly. Answer with JSON.", rf.SYSTEM]
+    assert res["system_prompts"] == {"plan": "Diagnose briefly. Answer with JSON."} and res["outcome"] == "helped"
+    seen["systems"].clear()
+    seen.pop("edited")
+    br.try_handler({"JobId": 9, "Payload": {**pl, "system_prompts": {"code": "Edit carefully. JSON only."}}}, ask=ask,
+                   verify=_fake_verify(seen, "run-failed", "ok"))
+    assert seen["systems"] == [None, "Edit carefully. JSON only."]              # None: the LLM client's own (ai.SYSTEM)
+    # nothing appliance-wide: the LLM client has no replaced prompts any more
+    assert not hasattr(ai, "set_system_overrides") and ai.cache_key("p", {}, system=rf.SYSTEM) == ai.cache_key("p", {}, system=rf.SYSTEM)
 
 
-def test_system_prompts_on_the_page_and_in_the_export():
+def test_a_trys_system_prompts_on_the_page_and_in_the_export():
     pytest.importorskip("jwt")
+    from containerizer import ai
     from containerizer import refactor as rf
     from test_refactor import _get, _post
     from test_refactor import adm as adm_fixture
     adm = adm_fixture.__wrapped__()
-    adm.conn.answers = {r"FROM cz.LlmPrompt": [{"Name": "refactor", "Text": "Keep <every> appender at Contoso.",
-                                                "UpdatedBy": "john.doe@example.com", "UpdatedAt": datetime(2026, 11, 27, 13, 0)}],
-                        r"SELECT Keywords FROM cz.BugReportSettings": [{"Keywords": "contoso"}]}
+    rows = [{"BugId": 3, "ApplicationId": 7, "ComponentId": 5, "App": "shop", "Component": "Api", "VerifyStatus": "run-failed",
+             "Status": "open", "Note": None, "Labels": None, "StatusNote": None, "CreatedBy": "john.doe@example.com",
+             "CreatedAt": datetime(2026, 11, 27, 12, 0), "ExportedAt": None, "Bytes": 900}]
+    case = {"application": "shop", "component": {"name": "Api", "project": "src/Api/Api.csproj"}, "commit": "a" * 40,
+            "verification": {"status": "run-failed", "detail": "x"}, "attempts": []}
+    jobs = [{"JobId": 21, "Status": "answered", "Error": None, "Note": None, "QueuedAt": datetime(2026, 11, 27, 12, 5),
+             "FinishedAt": None, "RequestedBy": "john.doe@example.com",
+             "Payload": json.dumps({"bug_id": 3, "hint": "keep the appender", "code_lines": 50,
+                                    "system_prompts": {"code": "Keep <every> appender at Contoso. JSON only."}}),
+             "Result": json.dumps({"outcome": "helped", "score": 5, "before": {"status": "run-failed"}, "after": {"status": "ok"},
+                                   "system_prompts": {"code": "Keep <every> appender at Contoso. JSON only."}})}]
+    gz = gzip.compress(json.dumps(case).encode())
+    adm.conn.answers = {r"DATALENGTH\(DataGz\)": rows, r"SELECT Keywords FROM cz.BugReportSettings": [{"Keywords": "contoso"}],
+                        r"WHERE Kind = N'bugtry' ORDER": jobs,
+                        r"WHERE JobId = %s AND Kind = N'bugtry' AND Status = N'answered'": jobs,
+                        r"SELECT BugId, Status, Note, Labels, CreatedAt, DataGz": [
+                            {"BugId": 3, "Status": "open", "Note": "", "Labels": None, "CreatedAt": datetime(2026, 11, 27, 12, 0), "DataGz": gz}],
+                        r"FROM cz.BugReport b JOIN cz.vApplicationLatest": [
+                            {"BugId": 3, "ApplicationId": 7, "AssessmentId": 70, "App": "shop", "Component": "Api", "DataGz": gz,
+                             "RepositoryUrl": "https://example.com/r", "SourcePath": None}],
+                        r"FROM cz.OrgRepository": [{"ScanId": 4, "AppName": "shop"}], r"EXEC cz.QueueLlmJob": [{"JobId": 31}]}
     a = adm.sessions.create("a@example.com", "A", True)
     page = _get(adm, a, "/admin/bugs").body
-    assert "System prompts" in page and "Keep &lt;every&gt; appender at Contoso.</textarea>" in page
-    assert "<b>replaced</b>" in page and "Back to the built-in text" in page and page.count("<span class='muted small'>built-in</span>") == 4
-    assert "You are a senior software engineer who makes the smallest safe code change" in page      # the built-in, to compare
+    assert "System prompts</h2>" not in page and "/admin/bugs/prompts/" not in page          # no appliance-wide section
+    assert page.count("<summary class='small'>System prompts of this try</summary>") == 2    # the new try and the continue form
+    new_form = page.split("A new try from the flagged commit:")[1]
+    assert "name='Prompt_plan'" in new_form and "name='Prompt_code'" in new_form and "carried on" not in new_form
+    assert "You are a senior software engineer who makes the smallest safe code change" in new_form   # the built-in, to edit
+    cont = page.split("Continue from this try</summary>")[1].split("</form>")[0]
+    assert "Keep &lt;every&gt; appender at Contoso. JSON only.</textarea>" in cont and "carried on" in cont
+    assert "its own system prompt for the code change" in page and "The system prompts it replaced" in page
     data = json.loads(_get(adm, a, "/admin/bugs/export.json").body)
-    assert list(data["replaced_system_prompts"]) == ["refactor"] and "contoso" not in json.dumps(data).casefold()
-    r = _post(adm, a, "/admin/bugs/prompts/refactor", Text="Do not remove log4net appenders.")
-    assert r.status in (302, 303) and "#prompt-refactor" in dict(r.headers)["Location"]
-    assert adm.conn.sql(r"INSERT cz.LlmPrompt")[-1][1][:2] == ("refactor", "Do not remove log4net appenders.")
-    n = len(adm.conn.sql(r"INSERT cz.LlmPrompt"))
-    assert "built-in" in dict(_post(adm, a, "/admin/bugs/prompts/refactor", Text="still here", Reset="1").headers)["Location"]
-    assert len(adm.conn.sql(r"INSERT cz.LlmPrompt")) == n and "<form" not in page.split("id='prompt-refactor'")[1].split("</form>")[0].split("<form", 2)[-1]
-    assert _post(adm, a, "/admin/bugs/prompts/nope", Text="x").status == 404
-    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
-    assert _post(adm, op, "/admin/bugs/prompts/refactor", Text="x").status == 403
-    assert rf.SYSTEM
+    assert "replaced_system_prompts" not in data and data["builtin_system_prompts"] == {"plan": ai.SYSTEM, "code": rf.SYSTEM}
+    t = data["reports"][0]["tries"][0]                                                       # the wording next to its effect
+    assert t["system_prompts"] == {"code": t["system_prompts"]["code"]} and "contoso" not in t["system_prompts"]["code"].casefold()
+    assert t["outcome"] == "helped" and t["score"] == 5
+    params = lambda: json.loads([p for p in adm.conn.sql(r"EXEC cz.QueueLlmJob")[-1][1] if isinstance(p, str) and p.startswith("{")][-1])  # noqa: E731
+    _post(adm, a, "/admin/bugs/3/try", Hint="one", CodeLines="1000", Prompt_plan=ai.SYSTEM, Prompt_code="Never remove logging. JSON only.")
+    assert params()["system_prompts"] == {"code": "Never remove logging. JSON only."} and params()["code_lines"] == 1000
+    _post(adm, a, "/admin/bugs/3/try", Hint="two", CodeLines="50", Prompt_plan=ai.SYSTEM, Prompt_code=rf.SYSTEM)
+    assert params()["system_prompts"] == {}
+    assert _post(adm, a, "/admin/bugs/prompts/refactor", Text="x").status == 404
 
 
 # --------------------------------------------------------------------------- views and labels

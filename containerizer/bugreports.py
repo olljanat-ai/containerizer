@@ -17,8 +17,10 @@ Containerizer.
   follows the hint, builds and runs again with it, and records whether that helped. The tries are part of the
   export: what was suggested, what the LLM changed, and the result, for whoever fixes the tool.
 
-- **System prompts** (the same page; llmprompts.py): what Containerizer tells the LLM about its role, per kind of
-  question, shown and replaceable; the replaced ones are in the export.
+- **System prompts**: a try shows the two system prompts it works under (what Containerizer tells the LLM about its
+  role: one for the plan change, one for the code change) and the administrator may replace them for that try
+  alone. A replaced prompt is kept with the try and exported next to its result, so wordings that work better can
+  go into the next version of Containerizer. Nothing outside the try uses it.
 
 Source file contents are not in a report: logs, the Dockerfile and finding evidence can still name things, which is
 what the keywords are for.
@@ -38,6 +40,9 @@ MAX_LOG = 300_000                 # characters of one attempt's log kept in a re
 MAX_NOTE = 1000
 MAX_KEYWORDS = 200
 MAX_HINT = 2000
+MAX_PROMPT = 12000                # characters of a system prompt replaced for a try
+PROMPT_STEPS = {"plan": "The plan change (what fails, and which build-plan change follows your words)",
+                "code": "The code change (the edits of the files it read)"}
 KIND = "bugtry"
 PRIORITY = 1700                   # a person asked for it: before the automatic reviews
 OK = ("ok", "ok-external")
@@ -344,10 +349,30 @@ def _job_try(conn, job_id: int) -> tuple[dict, dict] | None:
         return None
 
 
-def queue_try(conn, bug_id: int, hint: str, parent: int | None = None, code_lines: int = 0) -> tuple[int | None, str]:
+def builtin_prompts() -> dict[str, str]:
+    """The system prompts a try works under unless it replaces them: {"plan", "code"}."""
+    from . import ai
+    from . import refactor as rf
+    return {"plan": ai.SYSTEM, "code": rf.SYSTEM}
+
+
+def replaced_prompts(given: dict | None) -> dict[str, str]:
+    """The prompts of a form or a payload that differ from the built-in ones (those a try replaces)."""
+    own = builtin_prompts()
+    out = {}
+    for step in PROMPT_STEPS:
+        text = str((given or {}).get(step) or "").replace("\r\n", "\n").strip()[:MAX_PROMPT]
+        if text and text != own[step].strip():
+            out[step] = text
+    return out
+
+
+def queue_try(conn, bug_id: int, hint: str, parent: int | None = None, code_lines: int = 0,
+              prompts: dict | None = None) -> tuple[int | None, str]:
     """Queue a try for a report: (job id or 0 when the same one waits, "") or (None, why not). `parent`: the try
     to continue from (its changes are the starting point). `code_lines`: how many lines of the application's code
-    the LLM may change (0: the build plan only)."""
+    the LLM may change (0: the build plan only). `prompts`: {"plan", "code"} system prompts for this try alone
+    (the ones that differ from the built-in texts are kept)."""
     import hashlib
     from .admin_refactor import order_source
     from .llmqueue import SqlJobQueue
@@ -384,9 +409,10 @@ def queue_try(conn, bug_id: int, hint: str, parent: int | None = None, code_line
     project = (case.get("component") or {}).get("project")
     payload = {"bug_id": int(r["BugId"]), "app": r["App"], "application_id": r["ApplicationId"], "component": r["Component"],
                "project": project, "source": source, "commit": case["commit"], "hint": hint, "code_lines": code_lines,
-               "parent": int(parent) if parent else None, "base": base,
+               "parent": int(parent) if parent else None, "base": base, "system_prompts": replaced_prompts(prompts),
                "flagged_status": (case.get("verification") or {}).get("status")}
-    key = hashlib.sha256(f"{r['BugId']}|{parent or 0}|{code_lines}|{hint}".encode()).hexdigest()
+    key = hashlib.sha256(f"{r['BugId']}|{parent or 0}|{code_lines}|{hint}|{json.dumps(payload['system_prompts'], sort_keys=True)}"
+                         .encode()).hexdigest()
     # no ProjectPath: QueueLlmJob skips a waiting job of the same component, and every try is kept
     job = {"Kind": KIND, "Reason": None, "App": r["App"], "Repository": r["App"], "SourceKey": r.get("SourceKey"),
            "ApplicationId": r["ApplicationId"], "AssessmentId": r["AssessmentId"], "Component": r["Component"],
@@ -527,12 +553,14 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
                                                                   max_tokens=ai.SHORT_ANSWER_TOKENS if system is None else None))
     verify = verify or (lambda a, c, rules, work, patch: vf.verify_component(a, c, rules, work=work, plan_patch=patch))
     base = pl.get("base") or {}
+    own = replaced_prompts(pl.get("system_prompts"))        # this try's own system prompts, where it replaces them
     code_lines = max(0, min(int(pl.get("code_lines") or 0), MAX_CODE_LINES))
     tmp = Path(os.environ.get(rf.WORK_ENV) or tempfile.gettempdir())
     tmp.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix=f"bugtry-{int(job.get('JobId') or 0)}-", dir=tmp))
     result = {"bug_id": pl.get("bug_id"), "hint": pl.get("hint"), "flagged_status": pl.get("flagged_status"),
-              "parent": pl.get("parent"), "code_lines_allowed": code_lines, "outcome": "not-tried", "score": 0,
+              "parent": pl.get("parent"), "code_lines_allowed": code_lines, "system_prompts": own,
+              "outcome": "not-tried", "score": 0,
               "plan_patch_total": base.get("plan_patch") or {}, "code_patch": base.get("code_patch") or "", "llm_calls": 0}
 
     def done(reason: str = "") -> dict:
@@ -588,7 +616,7 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
                                                     "properties": {**TRY_SCHEMA["properties"],
                                                                    "files": {"type": "array", "items": {"type": "string"}}}}
         answer = ask(try_prompt(a.name, c.name, kind, plan, stage, log_tail, str(pl.get("hint") or ""), listed, code_lines),
-                     schema, None)
+                     schema, own.get("plan"))
         result["llm_calls"] += 1
         try:
             fix = json.loads(answer.get("fix_json") or "{}")
@@ -613,7 +641,7 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
             while result["llm_calls"] < MAX_LLM_CALLS:
                 progress("asking the LLM for the code change")
                 ans = ask(edit_prompt(str(pl.get("hint") or ""), result["llm"]["diagnosis"], log_tail, texts, code_lines,
-                                      problem), EDIT_SCHEMA, rf.SYSTEM)
+                                      problem), EDIT_SCHEMA, own.get("code") or rf.SYSTEM)
                 result["llm_calls"] += 1
                 edits = ans.get("edits") or []
                 if not edits:
@@ -675,7 +703,7 @@ def tries(conn, bug_ids=None) -> dict:
             continue
         state = {"answered": "done", "failed": "failed", "skipped": "cancelled"}.get(r["Status"], r["Status"])
         t = {"id": int(r["JobId"]), "continues": pl.get("parent"), "hint": pl.get("hint") or "", "state": state,
-             "code_lines_allowed": int(pl.get("code_lines") or 0),
+             "code_lines_allowed": int(pl.get("code_lines") or 0), "system_prompts": pl.get("system_prompts") or {},
              "asked_at": r["QueuedAt"].isoformat() if r.get("QueuedAt") else None, "asked_by": r.get("RequestedBy")}
         if r["Status"] == "answered":
             t.update({k: res.get(k) for k in ("outcome", "score", "reason", "before", "llm", "after", "plan_patch_total",
@@ -693,17 +721,27 @@ def tries(conn, bug_ids=None) -> dict:
     return out
 
 
-def _try_form(bug_id: int, csrf: str, parent: int | None = None) -> str:
+def _try_form(bug_id: int, csrf: str, parent: int | None = None, prompts: dict | None = None) -> str:
+    """The form of a new try. `prompts`: the system prompts the try it continues replaced (they are carried on)."""
     lines = "".join(f"<option value='{n}'{' selected' if n == DEFAULT_CODE_LINES else ''}>"
                     f"{'No code changes' if not n else f'Code changes: up to {n:,} lines'}</option>" for n in CODE_LINE_CHOICES)
     ph = ("What should the LLM try next, on top of this try?" if parent else
           "What should the LLM try? For example: build on the full image and add the package libgdiplus")
-    return (f"<form method='post' action='{BASE}/{int(bug_id)}/try' class='formrow'>{csrf}"
+    own, mine = builtin_prompts(), replaced_prompts(prompts)
+    areas = "".join(
+        f"<label class='small'>{e(title)}" + (" <b>(replaced, carried on from the try it continues)</b>" if step in mine else "")
+        + f"</label><textarea name='Prompt_{step}' rows='7' maxlength='{MAX_PROMPT}' spellcheck='false'>"
+        f"{e(mine.get(step) or own[step])}</textarea>" for step, title in PROMPT_STEPS.items())
+    sysp = (f"<details{' open' if mine else ''}><summary class='small'>System prompts of this try</summary><p class='small muted'>"
+            "What Containerizer tells the LLM about its role, for this try's two questions. Change a text to try another "
+            "wording: it is used for this try alone, kept with it and exported with its result. Keep the sentence that asks "
+            "for JSON. Unchanged texts are the built-in ones.</p>" + areas + "</details>")
+    return (f"<form method='post' action='{BASE}/{int(bug_id)}/try'>{csrf}"
             + (f"<input type='hidden' name='Parent' value='{int(parent)}'>" if parent else "")
-            + f"<textarea name='Hint' rows='2' maxlength='{MAX_HINT}' required style='min-width:520px' "
+            + f"<div class='formrow'><textarea name='Hint' rows='2' maxlength='{MAX_HINT}' required style='min-width:520px' "
             f"aria-label='What the LLM should try' placeholder='{e(ph)}'></textarea>"
             f"<select name='CodeLines' aria-label='Code changes'>{lines}</select>"
-            f"<button class='secondary'>{'Continue from this try' if parent else 'Let the LLM try'}</button></form>")
+            f"<button class='secondary'>{'Continue from this try' if parent else 'Let the LLM try'}</button></div>{sysp}</form>")
 
 
 def tries_html(bug: dict, items: list[dict], csrf: str) -> str:
@@ -736,12 +774,19 @@ def tries_html(bug: dict, items: list[dict], csrf: str) -> str:
             if (t.get("after") or {}).get("log_tail"):
                 more += f"<details><summary class='small'>The log with the change</summary><pre class='code'>{e(t['after']['log_tail'])}</pre></details>"
             if is_open and oc not in ("not-tried", "already-fixed"):
-                more += f"<details><summary class='small'>Continue from this try</summary>{_try_form(bug['BugId'], csrf, t['id'])}</details>"
+                more += (f"<details><summary class='small'>Continue from this try</summary>"
+                         f"{_try_form(bug['BugId'], csrf, t['id'], t.get('system_prompts'))}</details>")
         else:
             head = {"queued": "Waiting in the LLM queue", "approval": "Waiting for approval on the LLM queue page",
                     "running": "Running", "failed": "Failed", "cancelled": "Cancelled"}.get(t["state"], t["state"])
             head = f"<b>{e(head)}</b>" + (f" <span class='muted'>{e(t.get('error') or '')}</span>" if t.get("error") else "")
         code = f" <span class='muted small'>· code up to {t['code_lines_allowed']} lines</span>" if t.get("code_lines_allowed") else ""
+        if t.get("system_prompts"):
+            code += (" <span class='muted small'>· its own system prompt for "
+                     + " and ".join("the " + k + " change" for k in PROMPT_STEPS if k in t["system_prompts"]) + "</span>")
+            more = ("<details><summary class='small'>The system prompts it replaced</summary>" + "".join(
+                f"<div class='small muted'>{e(PROMPT_STEPS[k])}</div><pre class='code'>{e(v)}</pre>"
+                for k, v in t["system_prompts"].items() if k in PROMPT_STEPS) + "</details>") + more
         sub = "".join(one(k) for k in kids.get(t["id"], []))
         return (f"<li id='try{int(t['id'])}'><span class='small muted'><a href='/admin/llm-queue/{int(t['id'])}'>#{int(t['id'])}</a></span> "
                 f"“{e(t['hint'])}”{code}<br>{head}{more}" + (f"<ul class='checks'>{sub}</ul>" if sub else "") + "</li>")
@@ -795,13 +840,11 @@ def export(conn, ids: list[int] | None = None, rand=None, now: datetime | None =
     keywords = parse_keywords(keywords_text(conn))
     replace, counts = anonymizer(keywords, rand)
     bugs = anonymize(bugs, replace)
-    from . import llmprompts
-    replaced = anonymize({name: o["text"] for name, o in llmprompts.load(conn).items()}, replace)
     return {"format": "containerizer-bug-reports/1", "containerizer": __version__,
             "exported_at": (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "anonymized": {"keywords": len(keywords), "replacements": counts["n"],
                            "how": "each keyword is replaced by one random word, the same within this file"},
-            "replaced_system_prompts": replaced, "reports": bugs}
+            "builtin_system_prompts": builtin_prompts(), "reports": bugs}
 
 
 # --------------------------------------------------------------------------- the pages
@@ -909,7 +952,8 @@ def show(adm, conn, s, a, q: dict | None = None) -> "Response":  # noqa: F821
                     "stars say how far the build and run got (★ the build fails, ★★ it builds and the run fails, ★★★★★ it "
                     "builds and runs), and <b>best so far</b> marks the try to go on from; <i>Continue from this try</i> "
                     "starts the next one from any try's changes, not only the latest. A report with tries cannot be "
-                    "removed, only closed.</p>" + blocks)
+                    "removed, only closed. <i>System prompts of this try</i> shows what the LLM is told about its role and "
+                    "lets you change it for that try alone.</p>" + blocks)
     n = len(parse_keywords(kw))
     body.append("<h2 id='export'>Export</h2>"
                 + (f"<p><a class='button' href='{e(BASE + '/export.json' + here(view=view, label=label)[len(BASE):])}' download>"
@@ -924,8 +968,6 @@ def show(adm, conn, s, a, q: dict | None = None) -> "Response":  # noqa: F821
                 f"<form method='post' action='{BASE}/keywords'>{csrf}<textarea name='Keywords' rows='8' maxlength='20000' "
                 f"spellcheck='false' aria-label='Anonymization keywords' placeholder='contoso&#10;expense-claims&#10;build01'>"
                 f"{e(kw)}</textarea><p><button>Save keywords</button></p></form>")
-    from . import llmprompts
-    body.append(llmprompts.section_html(conn, csrf, BASE))
     return Response(200, adm._shell(s, a, "Bug reports", "bugs", "".join(body), flash))
 
 
@@ -960,20 +1002,6 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
                          ("X-Content-Type-Options", "nosniff")], ctype="text/x-diff; charset=utf-8")
     if method != "POST":
         return nf
-    if len(parts) == 3 and parts[1] == "prompts":
-        from . import llmprompts
-        try:
-            text = "" if form.get("Reset", [""])[0] == "1" else form.get("Text", [""])[0]
-            got = llmprompts.save(conn, parts[2], text, s.user)
-            conn.commit()
-        except Exception as ex:  # noqa: BLE001      a database from before schema 65
-            conn.rollback()
-            print(f"system prompt {parts[2]}: {type(ex).__name__}: {ex}", file=sys.stderr)
-            got = "bad"
-        if got == "bad":
-            return nf
-        msg = "Saved:+used+from+the+next+scan+or+queue+job." if got == "saved" else "The+built-in+text+is+used+again."
-        return redirect(f"{BASE}?msg={msg}#prompt-{parts[2]}")
     if len(parts) == 2 and parts[1] == "keywords":
         text = "\n".join(parse_keywords(form.get("Keywords", [""])[0]))
         cur = conn.cursor()
@@ -1008,7 +1036,8 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
             parent, lines = form.get("Parent", [""])[0], form.get("CodeLines", ["0"])[0]
             jid, why = queue_try(conn, int(parts[1]), form.get("Hint", [""])[0],
                                  int(parent) if re.fullmatch(r"\d{1,9}", parent) else None,
-                                 int(lines) if re.fullmatch(r"\d{1,3}", lines) else 0)
+                                 int(lines) if re.fullmatch(r"\d{1,4}", lines) else 0,
+                                 {step: form.get(f"Prompt_{step}", [""])[0] for step in PROMPT_STEPS})
             conn.commit()
         except Exception as ex:  # noqa: BLE001
             conn.rollback()

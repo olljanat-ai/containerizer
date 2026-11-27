@@ -1005,11 +1005,6 @@ class Worker:
                 if c and c.token:
                     REDACT.add(c.token, c.username)
             proxy = self.use_feeds(creds)
-            try:                            # the system prompts an administrator replaced (Admin → Bug reports)
-                from . import llmprompts
-                llmprompts.apply(conn)
-            except Exception as ex:  # noqa: BLE001
-                self.log(f"system prompts not read: {type(ex).__name__}: {str(ex)[:200]}")
             with self._rules_lock:
                 self.sync_reviewed_rules(conn, creds)
             hooks._update(ImageTag=tag)
