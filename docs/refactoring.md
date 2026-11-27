@@ -165,6 +165,35 @@ for the challenge app `expense-claims`:
 ![The coloured diff of a refactoring patch: the certificate loaded from a mounted file instead of the Windows store](images/admin-refactoring-diff.png#only-light){ .cz-shot }
 ![The coloured diff of a refactoring patch: the certificate loaded from a mounted file instead of the Windows store](images/admin-refactoring-diff-dark.png#only-dark){ .cz-shot }
 
+## Browse the code
+
+**Browse the code** on the order's page opens the application's files as they were at the assessed commit and as
+they are with the patch, like a repository browser: the folder tree on the left, a file on the right.
+
+![The code browser of a refactoring order: the folder tree with the changed files marked, and a patched file with its added lines highlighted](images/admin-refactoring-code.png#only-light){ .cz-shot }
+![The code browser of a refactoring order: the folder tree with the changed files marked, and a patched file with its added lines highlighted](images/admin-refactoring-code-dark.png#only-dark){ .cz-shot }
+
+- **Original / Patched** switches the whole tree. `A`, `M` and `D` mark the files (and `M` the folders) the patch
+  adds, changes and removes; a removed file is shown on the original side.
+- A changed file shows its added lines (patched) or removed lines (original) highlighted, and **Side by side**
+  puts both next to each other. **Raw** gives the text alone.
+- **Go to file** finds files by a part of their name, and **changed files only** lists just the patch's files.
+
+![Both sides of a changed file next to each other](images/admin-refactoring-code-split.png#only-light){ .cz-shot }
+![Both sides of a changed file next to each other](images/admin-refactoring-code-split-dark.png#only-dark){ .cz-shot }
+
+The files are kept with the order, in the database, when the patch is made: the scan worker's clone moves on with
+the next scan. What is kept:
+
+- the application's folder (the whole repository when the application is its top folder), not the rest of a
+  repository with several applications;
+- text files up to 512 KiB each and 64 MiB together, the patch's files first; binary and larger files are listed
+  without their text;
+- for the newest three orders of an application. An older order keeps its patch and diff, without the browser.
+
+Orders made before 0.54.8 have no code kept. The same roles see it as the patch. The database and its backups
+grow by the compressed text (typically a fifth of its size).
+
 ## How to apply it
 
 The order's page has **Download .patch** (`<app>-<component>-containerizer.patch`, or `-all-` for every

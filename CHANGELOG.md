@@ -8,6 +8,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.8 (2026-11-27)
+
+- **New: browse the code of a refactoring order.** **Browse the code** on the order's page shows the application's
+  files at the assessed commit and with the patch, like a repository browser: a folder tree with the files the
+  patch adds, changes and removes marked, any file with its changed lines highlighted, both sides next to each
+  other, the raw text, *Go to file* and *changed files only*. The queue runner keeps the application's folder with
+  the order when the patch is made (schema 64, `cz.LlmJobSource`: text files up to 512 KiB each and 64 MiB
+  together, compressed, for the newest three orders of an application), so it works after the clone moved on.
+  Orders made before this version show the diff only
+  ([docs/refactoring.md](docs/refactoring.md#browse-the-code)).
 ## 0.54.7 (2026-11-27)
 
 - **Fixed: a NuGet.Config that names a folder of a Windows machine as a package source stopped restore with

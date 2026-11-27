@@ -136,3 +136,36 @@ def test_the_snapshot_in_sql_server(repo, monkeypatch):
     cur.execute("SELECT COUNT(*) FROM cz.LlmJobSource WHERE JobId = 4")
     assert cur.fetchone()[0] == -(-len(data) // 500)
     assert not codebrowse.exists(as_("cz_cb_reader"), 4)         # source code: not for the reader role
+
+
+def test_the_admin_pages(repo):
+    pytest.importorskip("jwt")
+    from test_refactor import RESULT, _get, _job
+    from test_refactor import adm as adm_fixture
+    adm = adm_fixture.__wrapped__()
+    data = codebrowse.build(repo, repo / "src/Svc")
+    parts = [{"Data": data[i:i + 700]} for i in range(0, len(data), 700)]
+    adm.conn.answers = {r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'": [_job(result=RESULT)],
+                        r"SELECT RemoveRequestedAt FROM cz.LlmJob": [{"RemoveRequestedAt": None}],
+                        r"SELECT TOP \(1\) 1 FROM cz.LlmJobSource": [{"x": 1}],
+                        r"SELECT Data FROM cz.LlmJobSource": parts}
+    codebrowse._CACHE.clear()
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    order = _get(adm, op, "/admin/refactoring/42").body
+    assert "href='/admin/refactoring/42/code'>Browse the code</a>" in order
+    r = _get(adm, op, "/admin/refactoring/42/code")
+    assert r.status == 200 and "Code of refactoring #42: shop" in r.body and "log4net.config" in r.body
+    r = adm.handle("GET", "/admin/refactoring/42/code", "path=log4net.config&view=split", {"Cookie": f"{adm.cookie}={op}"}, b"")
+    assert "cb-split" in r.body
+    r = adm.handle("GET", "/admin/refactoring/42/code", "path=log4net.config&raw=1&side=original",
+                   {"Cookie": f"{adm.cookie}={op}"}, b"")
+    assert r.status == 200 and r.body == OLD.encode() and ("X-Content-Type-Options", "nosniff") in r.headers
+    assert adm.handle("GET", "/admin/refactoring/42/code", "path=logo.png&raw=1", {"Cookie": f"{adm.cookie}={op}"}, b"").status == 404
+    viewer = adm.sessions.create("v@example.com", "V", False, True)
+    assert _get(adm, viewer, "/admin/refactoring/42/code").status == 403
+    # an order without a snapshot: no button, and the page says so
+    codebrowse._CACHE.clear()
+    adm.conn.answers = {r"FROM cz.LlmJob WHERE JobId = %s AND Kind = N'refactor'": [_job(result=RESULT)],
+                        r"SELECT RemoveRequestedAt FROM cz.LlmJob": [{"RemoveRequestedAt": None}]}
+    assert "Browse the code" not in _get(adm, op, "/admin/refactoring/42").body
+    assert _get(adm, op, "/admin/refactoring/42/code").status == 404

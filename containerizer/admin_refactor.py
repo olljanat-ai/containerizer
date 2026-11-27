@@ -698,7 +698,7 @@ def show_code(adm, conn, s, a, r: dict, q: dict) -> Response:
     if snap is None:
         return Response(404, adm._shell(s, a, "No code to browse", "refactoring",
                                         f"<p>This order has no code kept (it has no patch, it was made before version "
-                                        f"0.55, or newer orders of the application took its place). "
+                                        f"0.54.8, or newer orders of the application took its place). "
                                         f"<a href='{BASE}/{ident}'>Back to the order</a></p>"))
     base = f"{BASE}/{ident}/code"
     if (q.get("raw") or [""])[0] == "1":
