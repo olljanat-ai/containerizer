@@ -1170,7 +1170,7 @@ def render_application(app: dict, nav: str = "", refactor: dict | None = None) -
                        f"<div class='muted small'>{e(c['VerdictText'])}"
                        f"{'; targets ' + e(c['TargetFramework']) if c['TargetFramework'] else ''}</div>"
                        f"{_llm_review(reviews.get(c['ComponentId']), app.get('AssessedAt'))}"
-                       f"{_verify_detail(c, healthy, (refactor.get('verify_logs') or {}).get(c['ComponentId']))}{_sandbox_detail(sandbox.get(c['ComponentId']), (refactor.get('sandbox_logs') or {}).get(c['ComponentId']))}{items}"
+                       f"{_verify_detail(c, healthy, (refactor.get('verify_logs') or {}).get(c['ComponentId']), refactor)}{_sandbox_detail(sandbox.get(c['ComponentId']), (refactor.get('sandbox_logs') or {}).get(c['ComponentId']))}{items}"
                        f"{_migration(app['ApplicationId'], migs.get(c['ComponentId']), refactor)}</details>")
     repo = by_comp.get(None, [])
     if repo:
@@ -1381,9 +1381,10 @@ def _verify(c: dict, healthy=()) -> str:
     return out
 
 
-def _verify_detail(c: dict, healthy=(), logs=None) -> str:
+def _verify_detail(c: dict, healthy=(), logs=None, ctx: dict | None = None) -> str:
     """Why a component's build or run failed, with the errors of its log (VerifyDetail), in its details; `logs`:
     the whole logs to download (verifylog.available: administrators and operators)."""
+    from .bugreports import flag_html
     from .verifylog import links_html
     s = c.get("VerifyStatus")
     if s not in VERIFY_FAILED:
@@ -1401,7 +1402,7 @@ def _verify_detail(c: dict, healthy=(), logs=None) -> str:
                 + "<p class='muted small'>This scan kept no log; the next scan shows the end of it here.</p>")
     return (f"<div class='sandbox'><div><span class='label'>Build and run</span> {_verify(dict(c, ComponentId=None))}"
             " <span class='muted small'>(in the scan's verification, before anything is generated)</span></div>"
-            f"{body}{links_html(logs)}<p class='muted small'>{e(after)}</p></div>")
+            f"{body}{links_html(logs)}<p class='muted small'>{e(after)}</p>{flag_html(c, ctx or {})}</div>")
 
 
 def _verify_failed_note(app: dict) -> str:
@@ -1993,6 +1994,9 @@ def make_handler(connect, admin=None):
                             ctx["lab_admin"] = bool(s and s.admin)              # may turn lab services on
                             if s and s.admin:                                   # may order Make it A+ (admin_telemetry.py)
                                 ctx["telemetry_csrf"] = admin._csrf(s)
+                                from .bugreports import flagged            # may flag a failed build as a tool bug
+                                ctx["bug_csrf"], ctx["bugs"] = admin._csrf(s), flagged(admin, app)
+                            ctx["bug_notice"] = parse_qs(u.query).get("bug", [""])[0]
                             ctx["telemetry_notice"] = parse_qs(u.query).get("telemetry", [""])[0]
                             # Grafana's links: for everyone when Grafana is open to read (the appliance, unless the
                             # results pages need sign-in), else for those who have its link on the admin pages

@@ -3634,3 +3634,36 @@ GRANT SELECT ON [${schema}].LlmJobSource TO [${schema}_admin];
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 64) INSERT [${schema}].SchemaVersion (Version) VALUES (64);
 GO
+
+-- 65: suspected Containerizer bugs (bugreports.py): a failed component's case as an administrator flagged it (its
+-- facts, every attempt's Dockerfile, command and log, its findings; gzip JSON, copied because the next scan replaces
+-- the logs), and the keywords the export replaces. Administrators only; no foreign keys: a report outlives its scan.
+IF OBJECT_ID(N'[${schema}].BugReport', N'U') IS NULL
+CREATE TABLE [${schema}].BugReport (
+    BugId         int IDENTITY(1,1) NOT NULL CONSTRAINT PK_BugReport PRIMARY KEY,
+    ApplicationId int            NULL,
+    ComponentId   int            NULL,
+    AssessmentId  int            NULL,
+    App           nvarchar(200)  NOT NULL,
+    Component     nvarchar(200)  NOT NULL,
+    VerifyStatus  nvarchar(40)   NULL,
+    Status        nvarchar(10)   NOT NULL CONSTRAINT DF_BugReport_Status DEFAULT N'open'
+                  CONSTRAINT CK_BugReport_Status CHECK (Status IN (N'open', N'closed')),
+    Note          nvarchar(1000) NULL,
+    CreatedBy     nvarchar(200)  NULL,
+    CreatedAt     datetime2(0)   NOT NULL CONSTRAINT DF_BugReport_CreatedAt DEFAULT SYSUTCDATETIME(),
+    ExportedAt    datetime2(0)   NULL,
+    DataGz        varbinary(max) NOT NULL
+);
+GO
+IF OBJECT_ID(N'[${schema}].BugReportSettings', N'U') IS NULL
+CREATE TABLE [${schema}].BugReportSettings (
+    Id       tinyint       NOT NULL CONSTRAINT PK_BugReportSettings PRIMARY KEY CONSTRAINT CK_BugReportSettings_Id CHECK (Id = 1),
+    Keywords nvarchar(max) NULL
+);
+GO
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BugReport TO [${schema}_admin];
+GRANT SELECT, INSERT, UPDATE ON [${schema}].BugReportSettings TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 65) INSERT [${schema}].SchemaVersion (Version) VALUES (65);
+GO

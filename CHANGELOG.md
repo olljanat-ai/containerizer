@@ -8,6 +8,16 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.9 (2026-11-27)
+
+- **New: bug reports.** An administrator flags a component whose build or run failed in a way that looks like a
+  fault of Containerizer (**Flag as a Containerizer bug** in its *Build and run* block, with a note). The case is
+  copied then (schema 65, `cz.BugReport`: the component's facts, every attempt's Dockerfile, build command and log,
+  its findings; not the source code), since the next scan replaces the logs. **Admin → Bug reports** lists the
+  cases and exports them as one JSON file for whoever maintains Containerizer. **Anonymization keywords** (one
+  per line) are replaced everywhere in the export by random words, the same word for the same keyword within a
+  file ([docs/bug-reports.md](docs/bug-reports.md)).
+
 ## 0.54.8 (2026-11-27)
 
 - **New: browse the code of a refactoring order.** **Browse the code** on the order's page shows the application's

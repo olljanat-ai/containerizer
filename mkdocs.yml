@@ -63,6 +63,7 @@ nav:
       - Refactoring patches: refactoring.md
       - "A+: OpenTelemetry": telemetry.md
       - Egress and network connectivity: egress.md
+      - Bug reports: bug-reports.md
       - "Inventory: binaries, databases, services": inventory.md
       - Gateway API routes: gateway-api.md
       - "Clusters: sandbox, development, acceptance, production": clusters.md

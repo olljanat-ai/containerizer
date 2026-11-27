@@ -1,0 +1,168 @@
+"""Suspected Containerizer bugs (bugreports.py): flagging, the page, the export and its anonymization."""
+import gzip
+import json
+import os
+import random
+import re
+import uuid
+from datetime import datetime
+
+import pytest
+
+from containerizer import bugreports as br
+from containerizer import verifylog
+
+
+def test_keywords_and_anonymization():
+    kws = br.parse_keywords("Contoso\n\n contoso \nexpense-claims\nx\nbuild01.contoso.local\r\n")
+    assert kws == ["build01.contoso.local", "expense-claims", "Contoso"]            # longest first, once, 2+ characters
+    replace, counts = br.anonymizer(kws, random.Random(1))
+    case = {"application": "expense-claims", "note": "CONTOSO feed",
+            "attempts": [{"log": "GET https://build01.contoso.local/x for Contoso.Framework\ncontoso again"}],
+            "paths": {"src/Contoso.Web/Web.csproj": 1}, "n": 3, "none": None}
+    out = br.anonymize(case, replace)
+    text = json.dumps(out)
+    assert "contoso" not in text.casefold() and "expense-claims" not in text and counts["n"] == 6
+    host = out["attempts"][0]["log"].split("https://")[1].split("/")[0]
+    company = out["note"].split(" ")[0]
+    assert re.fullmatch(r"[a-z]+-[0-9a-f]{4}", host) and re.fullmatch(r"[a-z]+-[0-9a-f]{4}", company) and host != company
+    # the same word for the same keyword, whatever its case; structure and other values untouched
+    assert out["attempts"][0]["log"] == f"GET https://{host}/x for {company}.Framework\n{company} again"
+    assert list(out["paths"]) == [f"src/{company}.Web/Web.csproj"] and out["n"] == 3 and out["none"] is None
+    # another export: other words
+    again = br.anonymize(case, br.anonymizer(kws, random.Random(2))[0])
+    assert again["note"] != out["note"]
+    same, counts = br.anonymizer([])
+    assert same("Contoso") == "Contoso" and counts["n"] == 0
+
+
+def test_a_long_log_keeps_its_start_and_end():
+    text = "start\n" + "x" * 1000 + "\nthe error"
+    cut = br._cut(text, 100)
+    assert cut.startswith("start\n") and cut.endswith("the error") and "characters left out" in cut and len(cut) < 200
+    assert br._cut("short", 100) == "short"
+
+
+def test_the_flag_on_the_applications_page():
+    c = {"ComponentId": 5, "VerifyStatus": "build-failed"}
+    assert br.flag_html(c, {}) == ""                                             # not an administrator
+    ctx = {"bug_csrf": "<input type='hidden' name='csrf' value='t'>", "bugs": {}}
+    html = br.flag_html(c, ctx)
+    assert "action='/admin/bugs/flag/5'" in html and "Flag as a Containerizer bug" in html and "name='Note'" in html
+    html = br.flag_html(c, {**ctx, "bugs": {5: 12}, "bug_notice": "flagged"})
+    assert "action='/admin/bugs/unflag/5'" in html and "report #12" in html and "notice-ok" in html
+    assert "notice" not in br.flag_html({"ComponentId": 6}, {**ctx, "bugs": {5: 12}, "bug_notice": "flagged"})
+    from containerizer import webui
+    block = webui._verify_detail({"ComponentId": 5, "VerifyStatus": "build-failed", "VerifyDetail": "a\nb"}, ctx=ctx)
+    assert "Flag as a Containerizer bug" in block
+    assert "Flag as" not in webui._verify_detail({"ComponentId": 5, "VerifyStatus": "build-failed", "VerifyDetail": "a\nb"})
+
+
+def test_the_admin_page_and_roles():
+    pytest.importorskip("jwt")
+    from test_refactor import _get, _post
+    from test_refactor import adm as adm_fixture
+    adm = adm_fixture.__wrapped__()
+    rows = [{"BugId": 3, "ApplicationId": 7, "ComponentId": 5, "App": "shop", "Component": "<Api>", "VerifyStatus": "build-failed",
+             "Status": "open", "Note": "NU1301 on a <Windows> folder", "CreatedBy": "john.doe@example.com",
+             "CreatedAt": datetime(2026, 11, 27, 12, 0), "ExportedAt": None, "Bytes": 900}]
+    case = {"application": "shop", "component": {"name": "Api"}, "verification": {"status": "build-failed", "detail": "x"},
+            "attempts": [{"attempt": 1, "stage": "build", "log": "restore from https://pkgs.contoso.example/ failed"}]}
+    adm.conn.answers = {r"DATALENGTH\(DataGz\)": rows, r"SELECT Keywords FROM cz.BugReportSettings": [{"Keywords": "contoso\nshop"}],
+                        r"SELECT BugId, Status, Note, CreatedAt, DataGz": [
+                            {"BugId": 3, "Status": "open", "Note": "seen at Contoso", "CreatedAt": datetime(2026, 11, 27, 12, 0),
+                             "DataGz": gzip.compress(json.dumps(case).encode())}]}
+    a = adm.sessions.create("a@example.com", "A", True)
+    page = _get(adm, a, "/admin/bugs")
+    assert page.status == 200 and "&lt;Api&gt;" in page.body and "NU1301 on a &lt;Windows&gt; folder" in page.body
+    assert "Export JSON" in page.body and "2 keywords" in page.body and ">contoso\nshop</textarea>" in page.body
+    assert "href='/admin/bugs'" in page.body                                     # the tab
+    r = _get(adm, a, "/admin/bugs/export.json")
+    data = json.loads(r.body)
+    assert r.status == 200 and data["format"] == "containerizer-bug-reports/1" and data["anonymized"]["keywords"] == 2
+    text = json.dumps(data["reports"]).casefold()
+    assert "contoso" not in text and "shop" not in text and data["anonymized"]["replacements"] == 3
+    assert data["reports"][0]["id"] == 3 and "attachment" in dict(r.headers)["Content-Disposition"]
+    assert adm.conn.sql(r"UPDATE cz.BugReport SET ExportedAt")
+    assert _post(adm, a, "/admin/bugs/keywords", Keywords="b\nContoso\ncontoso").status in (302, 303)
+    assert adm.conn.sql(r"BugReportSettings")[-1][1] == ("Contoso",)
+    assert _post(adm, a, "/admin/bugs/3/close").status in (302, 303) and adm.conn.sql(r"SET Status = %s")[-1][1] == ("closed", 3)
+    assert _post(adm, a, "/admin/bugs/3/remove").status in (302, 303) and adm.conn.sql(r"DELETE FROM cz.BugReport WHERE BugId")
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    assert _get(adm, op, "/admin/bugs").status == 403 and _post(adm, op, "/admin/bugs/flag/5").status == 403
+    assert "href='/admin/bugs'" not in _get(adm, op, "/admin/refactoring").body
+
+
+def test_flagging_and_exporting_in_sql_server():
+    """Schema 65 with the roles' real grants: an administrator flags a failed component (its logs are copied), flags it
+    again (replaced), exports with keywords; the report survives the next scan's logs; operators' logins (the reader
+    and the writer) have no access. Needs CONTAINERIZER_TEST_SQL."""
+    from containerizer import sqlstore
+    admin_sql = os.environ.get("CONTAINERIZER_TEST_SQL")
+    if not admin_sql:
+        pytest.skip("set CONTAINERIZER_TEST_SQL to run against SQL Server")
+    name = "czbug_" + uuid.uuid4().hex[:8]
+    cs = re.sub(r"(?i)(database|initial\s*catalog)\s*=[^;]*", f"Database={name}", admin_sql)
+    sqlstore.create_database(cs)
+    conn = sqlstore.connect(cs)
+    sqlstore.init_schema(conn)
+    for login, role in (("cz_bug_reader", "reader"), ("cz_bug_writer", "writer"), ("cz_bug_admin", "admin")):
+        sqlstore.create_login(conn, login, "Test-Passw0rd!x", role)
+    cur = conn.cursor()
+    cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'shop', N'contoso-shop')")
+    cur.execute("INSERT cz.ApplicationAssessment (ApplicationId, Rating, Score, Confidence, Summary, ToolVersion, SourceCommit) "
+                "SELECT ApplicationId, 'B', 70, 0.9, N'x', N'0.54.9', N'abcdef0123456789' FROM cz.Application")
+    cur.execute("INSERT cz.Component (ApplicationId, ProjectPath, Name) SELECT ApplicationId, N'src/Api/Api.csproj', N'Api' "
+                "FROM cz.Application")
+    cur.execute("INSERT cz.Component (ApplicationId, ProjectPath, Name) SELECT ApplicationId, N'src/Ok/Ok.csproj', N'Ok' "
+                "FROM cz.Application")
+    cur.execute("INSERT cz.ComponentAssessment (AssessmentId, ComponentId, Role, Tier, Verdict, VerdictText, Score, Confidence, "
+                "WindowsContainerOk, VerifyStatus, VerifyDetail) SELECT a.AssessmentId, c.ComponentId, N'web', N'server', "
+                "N'config', N'Needs configuration', 80, 0.9, 0, CASE c.Name WHEN N'Api' THEN N'build-failed' ELSE N'ok' END, "
+                "N'error NU1301' FROM cz.ApplicationAssessment a CROSS JOIN cz.Component c")
+    cur.execute("INSERT cz.Finding (AssessmentId, ComponentId, RuleId, Severity, RuleSeverity, Title, Evidence) "
+                "SELECT a.AssessmentId, c.ComponentId, N'cert-store', N'config', N'config', N'Certificate store', "
+                "N'src/Api/Program.cs:3' FROM cz.ApplicationAssessment a JOIN cz.Component c ON c.Name = N'Api'")
+    log = verifylog.header("docker build -t x .", "FROM mcr.microsoft.com/dotnet/sdk:10.0") + "restore from Contoso feed\nerror NU1301\n"
+    cur.execute("INSERT cz.ComponentVerifyLog (AssessmentId, ComponentId, Attempt, Stage, Chars, LogGz) "
+                "SELECT a.AssessmentId, c.ComponentId, 1, N'build', %s, %s FROM cz.ApplicationAssessment a "
+                "JOIN cz.Component c ON c.Name = N'Api'", (len(log), gzip.compress(log.encode())))
+    conn.commit()
+    cur.execute("SELECT ComponentId FROM cz.Component ORDER BY Name")
+    api, ok = (r[0] for r in cur.fetchall())
+    as_ = lambda login: sqlstore.connect(re.sub(r"(?i)(user id|uid)\s*=[^;]*", f"User Id={login}", cs), "Test-Passw0rd!x")  # noqa: E731
+    adm = as_("cz_bug_admin")
+    assert br.flag(adm, ok, "", "john.doe@example.com") is None                  # nothing failed
+    first = br.flag(adm, api, "first", "john.doe@example.com")
+    bug = br.flag(adm, api, "restore asks a Windows folder", "john.doe@example.com")
+    adm.commit()
+    assert bug and bug != first
+    c = adm.cursor()
+    c.execute("SELECT COUNT(*) FROM cz.BugReport")
+    assert c.fetchone()[0] == 1
+    conn.cursor().execute("DELETE FROM cz.ComponentVerifyLog")                   # the next scan: the report keeps its copy
+    conn.commit()
+    c = adm.cursor()
+    c.execute("INSERT cz.BugReportSettings (Id, Keywords) VALUES (1, N'contoso')")
+    adm.commit()
+    data = br.export(adm)
+    rep = data["reports"][0]
+    assert rep["id"] == bug and rep["note"] == "restore asks a Windows folder" and rep["commit"] == "abcdef012345"
+    assert rep["component"]["project"] == "src/Api/Api.csproj" and rep["verification"]["status"] == "build-failed"
+    assert rep["findings"] == [{"rule": "cert-store", "severity": "config", "title": "Certificate store",
+                                "evidence": "src/Api/Program.cs:3"}]
+    att = rep["attempts"][0]
+    assert "FROM mcr.microsoft.com/dotnet/sdk:10.0" in att["dockerfile_and_command"] and "error NU1301" in att["log"]
+    assert "contoso" not in json.dumps(data["reports"]).casefold() and data["anonymized"]["replacements"] == 2
+    assert br.flagged(type("A", (), {"connect_admin": lambda self: as_("cz_bug_admin")})(), {"ApplicationId": rep_app(adm)}) == {api: bug}
+    for login in ("cz_bug_reader", "cz_bug_writer"):
+        with pytest.raises(Exception):
+            x = as_(login).cursor()
+            x.execute("SELECT COUNT(*) FROM cz.BugReport")
+            x.fetchall()
+
+
+def rep_app(conn) -> int:
+    c = conn.cursor()
+    c.execute("SELECT ApplicationId FROM cz.BugReport")
+    return c.fetchone()[0]

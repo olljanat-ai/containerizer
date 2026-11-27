@@ -284,6 +284,9 @@ class Admin:
         if kind == "telemetry":                      # Make it A+ (admin_telemetry.py): administrators
             from . import admin_telemetry
             return admin_telemetry.route(self, conn, s, a, method, parts, q, form)
+        if kind == "bugs":                           # suspected Containerizer bugs (bugreports.py): administrators
+            from . import bugreports
+            return bugreports.route(self, conn, s, a, method, parts, q, form)
         if kind == "tags":                           # the results page's tags of an application: no tab of its own
             from . import tags
             return tags.route(self, conn, s, a, method, parts, form)
@@ -409,6 +412,8 @@ class Admin:
             tabs += [("rules", "Rule review")]
         if a.admin and getattr(self, "api", None) is not None:          # API keys and how to use the API
             tabs += [("api", "API")]
+        if a.admin and hasattr(self, "route_scans"):                     # suspected Containerizer bugs (bugreports.py)
+            tabs += [("bugs", "Bug reports")]
         tabs += [("audit", "Change history")]
         if a.admin and self.cfg.view_audit:
             tabs += [("access", "Access log")]
