@@ -32,7 +32,7 @@ MAX_KEYWORDS = 200
 NOTICES = {"flagged": ("ok", "Flagged as a suspected Containerizer bug: it is on Admin → Bug reports."),
            "unflagged": ("ok", "The flag was removed."),
            "nothing": ("bad", "This component has no failed build or run in its latest scan."),
-           "unavailable": ("bad", "Bug reports need the database of version 0.54.9 or later.")}
+           "unavailable": ("bad", "Bug reports need the database of version 0.54.7 or later.")}
 WORDS = ("amber", "birch", "cedar", "delta", "ember", "fjord", "grove", "harbor", "iris", "juniper", "kestrel", "lumen",
          "maple", "nectar", "onyx", "pebble", "quartz", "raven", "sorrel", "tundra", "umber", "violet", "willow", "zephyr")
 

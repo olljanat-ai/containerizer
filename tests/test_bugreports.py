@@ -111,7 +111,7 @@ def test_flagging_and_exporting_in_sql_server():
     cur = conn.cursor()
     cur.execute("INSERT cz.Application (SourceKey, Name) VALUES (N'shop', N'contoso-shop')")
     cur.execute("INSERT cz.ApplicationAssessment (ApplicationId, Rating, Score, Confidence, Summary, ToolVersion, SourceCommit) "
-                "SELECT ApplicationId, 'B', 70, 0.9, N'x', N'0.54.9', N'abcdef0123456789' FROM cz.Application")
+                "SELECT ApplicationId, 'B', 70, 0.9, N'x', N'0.54.7', N'abcdef0123456789' FROM cz.Application")
     cur.execute("INSERT cz.Component (ApplicationId, ProjectPath, Name) SELECT ApplicationId, N'src/Api/Api.csproj', N'Api' "
                 "FROM cz.Application")
     cur.execute("INSERT cz.Component (ApplicationId, ProjectPath, Name) SELECT ApplicationId, N'src/Ok/Ok.csproj', N'Ok' "

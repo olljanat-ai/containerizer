@@ -8,7 +8,7 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
-## 0.54.9 (2026-11-27)
+## 0.54.7 (2026-11-27)
 
 - **New: bug reports.** An administrator flags a component whose build or run failed in a way that looks like a
   fault of Containerizer (**Flag as a Containerizer bug** in its *Build and run* block, with a note). The case is
@@ -18,8 +18,6 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   per line) are replaced everywhere in the export by random words, the same word for the same keyword within a
   file ([docs/bug-reports.md](docs/bug-reports.md)).
 
-## 0.54.8 (2026-11-27)
-
 - **New: browse the code of a refactoring order.** **Browse the code** on the order's page shows the application's
   files at the assessed commit and with the patch, like a repository browser: a folder tree with the files the
   patch adds, changes and removes marked, any file with its changed lines highlighted, both sides next to each
@@ -28,8 +26,6 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   together, compressed, for the newest three orders of an application), so it works after the clone moved on.
   Orders made before this version show the diff only
   ([docs/refactoring.md](docs/refactoring.md#browse-the-code)).
-## 0.54.7 (2026-11-27)
-
 - **Fixed: a NuGet.Config that names a folder of a Windows machine as a package source stopped restore with
   NU1301.** Visual Studio's offline packages (`C:\Program Files (x86)\Microsoft SDKs\NuGetPackages\`), a share
   (`\\server\packages`) or `%ProgramFiles%\...` is, in a Linux build, a folder under the config's own that does not

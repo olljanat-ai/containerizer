@@ -191,7 +191,7 @@ the next scan. What is kept:
   without their text;
 - for the newest three orders of an application. An older order keeps its patch and diff, without the browser.
 
-Orders made before 0.54.8 have no code kept. The same roles see it as the patch. The database and its backups
+Orders made before 0.54.7 have no code kept. The same roles see it as the patch. The database and its backups
 grow by the compressed text (typically a fifth of its size).
 
 ## How to apply it

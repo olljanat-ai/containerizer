@@ -55,7 +55,7 @@ Open the file before you send it: a name that is not listed stays.
 ```json
 {
  "format": "containerizer-bug-reports/1",
- "containerizer": "0.54.9",
+ "containerizer": "0.54.7",
  "exported_at": "2026-11-27T12:10:00Z",
  "anonymized": {"keywords": 3, "replacements": 41, "how": "each keyword is replaced by one random word, the same within this file"},
  "reports": [
