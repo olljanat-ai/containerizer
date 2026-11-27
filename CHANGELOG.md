@@ -8,6 +8,18 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.8 (2026-11-27)
+
+- **Changed: system prompts are replaced per bug report try, not for the whole appliance.** 0.54.7's *System
+  prompts* section changed a prompt for every scan and order until it was reset. Now **System prompts of this
+  try** in a try's form shows the two prompts the try works under (the plan change, the code change), and a changed
+  text is used for that try alone; *Continue from this try* carries it on. A try shows what it replaced, and the
+  export has it next to the try's result and rating, with the built-in texts (`builtin_system_prompts`), so
+  wordings that clearly work better can become the built-in ones of a later version. A prompt replaced in 0.54.7
+  is no longer used (schema 66 drops `cz.LlmPrompt`); the scan worker and the queue runner read none.
+- **Fixed: *Code changes: up to 1,000 lines* was taken as no code changes** (the form's value was read as at most
+  three digits).
+
 ## 0.54.7 (2026-11-27)
 
 - **New: bug reports.** An administrator flags a component whose build or run failed in a way that looks like a

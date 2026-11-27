@@ -3689,3 +3689,10 @@ GRANT SELECT, INSERT, UPDATE ON [${schema}].BugReportSettings TO [${schema}_admi
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 65) INSERT [${schema}].SchemaVersion (Version) VALUES (65);
 GO
+
+-- 66: system prompts are replaced per bug report try (its payload), not for the whole appliance: 0.54.7's table of
+-- replaced prompts goes, with whatever it held (the built-in texts are in use again).
+IF OBJECT_ID(N'[${schema}].LlmPrompt', N'U') IS NOT NULL DROP TABLE [${schema}].LlmPrompt;
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 66) INSERT [${schema}].SchemaVersion (Version) VALUES (66);
+GO

@@ -151,31 +151,30 @@ commit; scan and flag the application again when it has moved on.
 
 ## System prompts
 
-![System prompts on the Bug reports page: one replaced, with its text, Save and Back to the built-in text](images/admin-system-prompts.png#only-light){ .cz-shot }
-![System prompts on the Bug reports page: one replaced, with its text, Save and Back to the built-in text](images/admin-system-prompts-dark.png#only-dark){ .cz-shot }
+A system prompt is what Containerizer tells the LLM about its role. A try asks the LLM two kinds of question, each
+under its own system prompt, and **System prompts of this try** in the try's form shows both, ready to edit:
 
-A system prompt is what Containerizer tells the LLM about its role, for one kind of question. **System prompts**
-on the same page shows each of them, and lets an administrator replace the text when the LLM goes wrong in a way
-a better instruction would prevent (it removes something it should keep, it reads a rule too strictly):
+| Prompt | Used in the try for | The same built-in text is used elsewhere for |
+|---|---|---|
+| The plan change | What fails, and which build-plan change follows your words | Component reviews where the rules are unsure, and the diagnosis of a failed build or run |
+| The code change | The edits of the files the LLM read | Every code change of a refactoring order |
 
-| Prompt | Used for |
-|---|---|
-| Assessment and build diagnosis | Component reviews where the rules are unsure, proposals of new rules, the diagnosis of a failed build or run, and the plan change of a bug report try |
-| Refactoring patches and Make it A | Every code change the LLM makes for a refactoring order, and the code change of a bug report try |
-| Egress reviews | The review of the connections the sandbox blocked |
-| Link reviews | Which application an internal-looking destination is |
-| Platform migrations | Moving containerized applications from another platform, and the sandbox tester |
+![System prompts of this try, in the form of a try: the two texts, ready to edit](images/admin-system-prompts.png#only-light){ .cz-shot }
+![System prompts of this try, in the form of a try: the two texts, ready to edit](images/admin-system-prompts-dark.png#only-dark){ .cz-shot }
 
-- **Save** puts your text in place of the built-in one. The scan worker uses it from its next scan and the LLM
-  queue from its next job; nothing restarts. The built-in text stays visible below yours, to compare.
-- **Back to the built-in text** removes the replacement. So does saving an empty text.
-- The question itself (the evidence, the file, your hint) and the form of the answer are not part of a system
+- **A changed text is used for that try alone.** Scans, refactoring orders and other tries keep the built-in texts;
+  nothing on the appliance changes. A text you leave as it is stays the built-in one.
+- **Continue from this try** carries a try's replaced prompts into the next form, so a wording that worked stays
+  until you change it back.
+- The question itself (the evidence, the files, your words) and the form of the answer are not part of a system
   prompt: an answer must still be the JSON its question asks for, so keep that instruction when you rewrite one.
-- A replaced prompt changes every question of its kind, for every application. Answers the LLM gave under the old
-  text are not reused: the same question is asked again.
-- Replaced prompts go into the export (`replaced_system_prompts`), anonymized like the rest, so the maintainers see
-  which wording worked better. A new version of Containerizer does not overwrite your text; go back to the
-  built-in one to get its improvements.
+- A try shows which prompts it replaced, and the export carries them with the try, next to its result and its
+  rating, together with the built-in texts of that version (`builtin_system_prompts`). That is how better wordings
+  are found: the maintainers compare what a replaced prompt achieved across reports, and a wording that clearly
+  works better becomes the built-in text of a later version of Containerizer.
+
+Version 0.54.7 let an administrator replace system prompts for the whole appliance. That is gone: a prompt
+replaced there is no longer used after the update, and the built-in texts apply again.
 
 ## Anonymization keywords
 
@@ -202,7 +201,7 @@ as `containerizer-bug-reports-<date>.json`:
  "containerizer": "0.54.7",
  "exported_at": "2026-11-27T12:10:00Z",
  "anonymized": {"keywords": 3, "replacements": 41, "how": "each keyword is replaced by one random word, the same within this file"},
- "replaced_system_prompts": {"refactor": "..."},
+ "builtin_system_prompts": {"plan": "...", "code": "..."},
  "reports": [
   {
    "id": 3, "status": "open", "flagged_at": "2026-11-27T12:04:00", "labels": ["nuget", "windows path"],
@@ -220,6 +219,7 @@ as `containerizer-bug-reports-<date>.json`:
               "plan_patch_total": {"base": "full", "add_packages": ["libgdiplus"]}, "code_patch": ""},
              {"id": 418, "continues": 412, "hint": "log to the console instead of d:\\logs", "state": "done",
               "outcome": "helped", "score": 5, "best": true, "code_lines_allowed": 50, "code_lines_changed": 7,
+              "system_prompts": {"code": "... Never remove a logging appender ..."},
               "code_patch": "diff --git ..."}]
   }
  ]
