@@ -373,7 +373,8 @@ def node_line(props: dict, engine: str | None = None, npm: str | None = None) ->
 def apply_node_engine(plan: dict, props: dict | None = None) -> None:
     """The plan's Node.js line for its `node_engine` and `npm_engine` (the ranges a build's engine error names) and
     the application's own engines.node and engines.npm. A range no image satisfies is not enforced at install
-    time: the application is built and run on the nearest line instead of being held back by the declaration."""
+    time: the application is built and run on the nearest line instead of being held back by the declaration. So
+    is a range that names one release of a line ("24.5.0"): the images have each line's newest release."""
     from .scan_node import engine_allows
     props = props if props is not None else plan.get("node_props") or {}
     dep = plan.get("node_engine") or ""
@@ -385,7 +386,13 @@ def apply_node_engine(plan: dict, props: dict | None = None) -> None:
     own = props.get("NodeEngine") or ""
     npm_off = (props.get("PackageManager") or "npm") == "npm" and not (
         npm_fits(line, props.get("NpmEngine") or "") and npm_fits(line, npm))
-    if (dep and not engine_allows(dep, line)) or (own and not engine_allows(own, line)) or npm_off:
+    from .scan_node import version_allows
+
+    def off(rng: str) -> bool:
+        # the line's image has its newest release: a range that ends inside the line (an exact "24.5.0", "~24.5.0",
+        # "<24.6") does not allow it, though it allows the line
+        return bool(rng) and (not engine_allows(rng, line) or not version_allows(rng, f"{line}.999.999"))
+    if off(dep) or off(own) or npm_off:
         plan["build_env"] = {**(plan.get("build_env") or {}), "npm_config_engine_strict": "false"}
         plan["ignore_engines"] = True
     elif plan.pop("ignore_engines", None):

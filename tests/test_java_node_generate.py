@@ -267,6 +267,15 @@ def test_a_dependency_engine_range_moves_the_image_to_a_line_it_allows(tmp_path)
     assert plan["node"] == 24 and not plan.get("ignore_engines")
     merge_plan(plan, {"node_engine": ">=22", "npm_engine": "^7"})             # no line has npm 7: not enforced
     assert plan["node"] == 24 and plan["ignore_engines"]
+    # one release of a line ("24.5.0"): the image has the line's newest, so the line is used without enforcing it
+    log = ('#16 2.163 npm error notsup Required: {"node":"24.5.0"}\n'
+           '#16 2.163 npm error notsup Actual:   {"npm":"10.9.9","node":"v22.23.4"}')
+    fr, caps = diagnose(log, "build", load_failures())
+    a, c, plan, df = plan_and_df(tmp_path, "svc")
+    merge_plan(plan, {"node_engine": caps["range"], "npm_engine": caps.get("npm") or "{npm}"})
+    assert plan["node"] == 24 and plan["ignore_engines"] and 'npm_config_engine_strict="false"' in dockerfile_node(plan)
+    merge_plan(plan, {"node_engine": "^24.5.0", "npm_engine": "{npm}"})
+    assert plan["node"] == 24 and not plan.get("ignore_engines")
     # ... and known before the first build, from the application's own engines.npm
     node(tmp_path / "own", "", {"name": "svc", "scripts": {"start": "node index.js"}, "dependencies": {"express": "4"},
                                 "engines": {"node": ">=22.20.0", "npm": ">=10.9.0 <11"}}, {"index.js": SERVER})
