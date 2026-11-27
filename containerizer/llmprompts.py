@@ -20,8 +20,9 @@ def prompts() -> dict:
     from . import ai, egress, links, refactor, replatform
     return {
         "assessment": ("Assessment and build diagnosis", "Component reviews where the rules are unsure, proposals of new "
-                       "rules, the diagnosis of a failed build or run, and the tries of bug reports.", ai.SYSTEM),
-        "refactor": ("Refactoring patches and Make it A", "Every code change the LLM makes for a refactoring order.",
+                       "rules, the diagnosis of a failed build or run, and the plan change of a bug report try.", ai.SYSTEM),
+        "refactor": ("Refactoring patches and Make it A", "Every code change the LLM makes for a refactoring order, and "
+                     "the code change of a bug report try.",
                      refactor.SYSTEM),
         "egress": ("Egress reviews", "The review of the connections the sandbox blocked.", egress.SYSTEM),
         "links": ("Link reviews", "Which application an internal-looking destination is.", links.SYSTEM),

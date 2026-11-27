@@ -1723,7 +1723,7 @@ table.diff tr.hunk td{background:var(--bg);color:var(--muted)}table.diff tr.note
 table.diff .sign{display:inline-block;width:1.2em;color:var(--muted);user-select:none}
 @media (prefers-color-scheme:dark){.diff-add{color:#4fd14f}.diff-del{color:#f07a7a}
 table.diff tr.add td{background:#16351a}table.diff tr.del td{background:#3d1a1a}}
-a.button.secondary{background:var(--card);color:var(--fg);margin-left:8px}
+a.button.secondary{background:var(--card);color:var(--fg);margin-left:8px}.cb-stars{color:#b45309;letter-spacing:1px}
 .cb-bar{display:flex;align-items:center;gap:12px;margin:12px 0 8px;flex-wrap:wrap}.cb-right{margin-left:auto;display:flex;align-items:center;gap:10px}
 .cb-path{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.cb-find input{width:170px;padding:4px 8px;font-size:13px}
 .cb-seg a{display:inline-block;padding:3px 10px;border:1px solid var(--line);background:var(--card);text-decoration:none;font-size:12px;color:var(--fg)}

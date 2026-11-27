@@ -24,7 +24,8 @@ The case is copied at that moment, because the next scan of the application repl
 - the component's findings (rule, severity, title, evidence).
 
 The application's source code is not copied. Secrets are masked in the logs when the scan stores them. A component
-has one open report: flagging it again replaces the copy, and **Remove the flag** deletes it.
+has one open report: flagging it again replaces the copy, and **Remove the flag** deletes it (a report that has
+tries is closed and kept instead, see below).
 
 ## Bug reports
 
@@ -37,32 +38,69 @@ once it is dealt with, **JSON** exports one report alone, and **Remove** deletes
 ## Let the LLM try
 
 Often you already have an idea of what would fix the case. Write it under the report in **Let the LLM try**, in your
-own words (*build on the full image and add libgdiplus*), and Containerizer tests the idea for you:
+own words (*build on the full image and add libgdiplus*), choose whether the LLM may change code, and Containerizer
+tests the idea for you:
 
-![Let the LLM try: a hint per report, the LLM's change to the build plan and whether it helped](images/admin-bug-tries.png#only-light){ .cz-shot }
-![Let the LLM try: a hint per report, the LLM's change to the build plan and whether it helped](images/admin-bug-tries-dark.png#only-dark){ .cz-shot }
+![Let the LLM try: tries with their ratings, the LLM's changes, and Continue from this try](images/admin-bug-tries.png#only-light){ .cz-shot }
+![Let the LLM try: tries with their ratings, the LLM's changes, and Continue from this try](images/admin-bug-tries-dark.png#only-dark){ .cz-shot }
 
 1. The LLM queue (a job of the kind *Bug report try*; approval and order as for the other kinds) takes the
    application's source at the flagged commit from the scan worker's clone.
 2. It builds and runs the component as it is, with the version installed now. If that works, the result is
    **Already fixed** and the LLM is not asked.
-3. It asks the LLM for a change of the **build plan** that follows your words: the base image, OS packages,
-   environment variables, writable folders, build arguments, files removed in the build, the runtime line. Never
-   the application's code, and never the Dockerfile's text directly.
+3. It asks the LLM for a change that follows your words (below).
 4. It builds and runs the component again with that change, and compares.
+
+### What the LLM may change
+
+- **The build plan**, always: the base image, OS packages, environment variables, writable folders, build
+  arguments, files removed in the build, the runtime line.
+- **The application's code**, when you choose *Code changes: up to 25, 50 or 100 lines*. The LLM first names up to
+  three files it needs to read (from the application's file list), then gives edits of those files; together they
+  may change at most the lines you allowed. Edits that change more, that do not match the file, or that remove
+  what the application does are refused; the LLM gets one more chance, then the try goes on without a code change.
+
+A try makes at most three LLM calls and two builds, so it cannot run for long. The scan's own Dockerfile text is
+not edited directly: it follows from the plan.
+
+### Every try is kept, and any of them can be continued
+
+Nothing of a try is thrown away: your words, the LLM's diagnosis, its plan change, the code change as a diff (with
+**Download .patch**) and the result stay with the report, and all of it goes into the export. A report that has
+tries cannot be removed, only closed; flagging the component again after a new scan closes the old report and
+keeps it.
+
+**Continue from this try** under any finished try starts the next one from that try's changes (its plan change and
+its code change), not from the flagged commit and not necessarily from the latest try: when the third idea made it
+worse, go on from the second. The page shows each try under the one it continues. A continued try takes its
+parent's result as its starting point, so it builds once.
+
+### The rating
+
+Each try has a result, compared with where it started, and stars for how far the build and run got:
+
+| Stars | The build and run with the change |
+|---|---|
+| ★☆☆☆☆ | the build fails |
+| ★★☆☆☆ | it builds, the run fails |
+| ★★★☆☆ | it builds and runs into a known finding |
+| ★★★★☆ | it runs, and stops only at missing external services |
+| ★★★★★ | it builds and runs |
 
 | Result | Meaning |
 |---|---|
-| **Helped** | It failed without the change, and builds and runs with it |
-| **Got further** | The build failed without the change; with it the build passes and the run fails |
-| **Did not help** | It fails with the change as well |
+| **Helped** | It builds and runs with the change |
+| **Got further** | It still fails, but later than before (more stars) |
+| **Did not help** | It fails as before |
+| **Worse** | It gets less far than before |
 | **Already fixed** | It builds and runs with this version without any change |
-| **Nothing to try** | The LLM found no build-plan change that does what you wrote (its reasoning is shown) |
-| **Not tried** | The source at the flagged commit is gone, the component is no longer built in Linux, or Docker is away |
+| **Nothing to try** | The LLM found no change that does what you wrote (its reasoning is shown) |
+| **Not tried** | The source at the flagged commit is gone, the component is no longer built in Linux, Docker is away, or the parent's code change no longer applies |
 
-Nothing is changed for good: the application's next scan builds it as before. The result is feedback, kept with
-the report: the export carries every try's words, the LLM's diagnosis and change, and the statuses before and
-after, so whoever fixes Containerizer sees what was tried and whether it worked.
+**Best so far** marks the try to go on from: the most stars, then the smallest change, then the earliest.
+
+A try changes nothing for the application itself: its next scan builds it as before, and the repository is never
+written to. What a try found is feedback for whoever fixes Containerizer, and a patch you can apply yourself.
 
 The try needs an LLM (Admin → Source control & LLM) and an organization scan on this machine that still has the
 commit; scan and flag the application again when it has moved on.
@@ -78,8 +116,8 @@ a better instruction would prevent (it removes something it should keep, it read
 
 | Prompt | Used for |
 |---|---|
-| Assessment and build diagnosis | Component reviews where the rules are unsure, proposals of new rules, the diagnosis of a failed build or run, and the tries of bug reports |
-| Refactoring patches and Make it A | Every code change the LLM makes for a refactoring order |
+| Assessment and build diagnosis | Component reviews where the rules are unsure, proposals of new rules, the diagnosis of a failed build or run, and the plan change of a bug report try |
+| Refactoring patches and Make it A | Every code change the LLM makes for a refactoring order, and the code change of a bug report try |
 | Egress reviews | The review of the connections the sandbox blocked |
 | Link reviews | Which application an internal-looking destination is |
 | Platform migrations | Moving containerized applications from another platform, and the sandbox tester |
@@ -128,10 +166,15 @@ Open the file before you send it: a name that is not listed stays.
    "verification": {"status": "build-failed", "detail": "..."},
    "attempts": [{"attempt": 1, "stage": "build", "dockerfile_and_command": "...", "log": "..."}],
    "findings": [{"rule": "cert-store", "severity": "config", "title": "...", "evidence": "..."}],
-   "tries": [{"hint": "build on the full image and add libgdiplus", "state": "done", "outcome": "helped",
-              "before": {"status": "run-failed", "steps": "...", "log_tail": "..."},
+   "tries": [{"id": 412, "continues": null, "hint": "build on the full image and add libgdiplus", "state": "done",
+              "outcome": "further", "score": 2, "code_lines_allowed": 0,
+              "before": {"status": "build-failed", "steps": "...", "log_tail": "..."},
               "llm": {"diagnosis": "...", "plan_patch": {"base": "full", "add_packages": ["libgdiplus"]}},
-              "after": {"status": "ok", "steps": "...", "log_tail": ""}}]
+              "after": {"status": "run-failed", "steps": "...", "log_tail": "..."},
+              "plan_patch_total": {"base": "full", "add_packages": ["libgdiplus"]}, "code_patch": ""},
+             {"id": 418, "continues": 412, "hint": "log to the console instead of d:\\logs", "state": "done",
+              "outcome": "helped", "score": 5, "best": true, "code_lines_allowed": 50, "code_lines_changed": 7,
+              "code_patch": "diff --git ..."}]
   }
  ]
 }

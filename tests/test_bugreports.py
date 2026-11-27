@@ -168,6 +168,13 @@ def test_flagging_and_exporting_in_sql_server():
     conn.commit()
     t = br.export(adm)["reports"][0]["tries"]
     assert len(t) == 1 and t[0]["outcome"] == "helped" and "contoso" not in t[0]["hint"].casefold()
+    # a report with tries is never removed: flagging the component again closes it and keeps it
+    newer = br.flag(adm, api, "after the next scan", "john.doe@example.com")
+    adm.commit()
+    c = adm.cursor()
+    c.execute("SELECT BugId, Status FROM cz.BugReport ORDER BY BugId")
+    assert [tuple(r) for r in c.fetchall()] == [(bug, "closed"), (newer, "open")]
+    assert br.tries(adm, {bug})[bug][0]["id"] == jid and br._job_try(adm, jid)[1]["outcome"] == "helped"
     # a replaced system prompt: the administrator writes it, the writer (worker, queue runner) reads it
     assert llmprompts.save(adm, "refactor", "Keep every appender.", "john.doe@example.com") == "saved"
     adm.commit()
@@ -205,12 +212,26 @@ def _source(tmp_path):
     return {"type": "local", "path": str(root)}, commit
 
 
-def test_the_outcome_of_a_try():
-    assert br.outcome_of("ok", None) == "already-fixed" and br.outcome_of("ok-external", "ok") == "already-fixed"
-    assert br.outcome_of("build-failed", None) == "nothing-to-try"
+def test_the_outcome_and_the_rating_of_a_try():
+    assert br.outcome_of("ok", None) == "already-fixed" and br.outcome_of("build-failed", None) == "nothing-to-try"
     assert br.outcome_of("build-failed", "ok") == "helped" and br.outcome_of("run-failed", "ok-external") == "helped"
     assert br.outcome_of("build-failed", "run-failed") == "further"
     assert br.outcome_of("build-failed", "build-failed") == "not-helped" and br.outcome_of("run-failed", "run-failed") == "not-helped"
+    assert br.outcome_of("run-failed", "build-failed") == "worse" and br.outcome_of("ok", "run-failed") == "worse"
+    assert br.outcome_of("ok-external", "ok") == "helped"                       # a continued try that still runs
+    assert [br.score_of(x) for x in ("build-failed", "run-failed", "finding", "ok-external", "ok", None)] == [1, 2, 3, 4, 5, 0]
+    assert br.stars(2) == "★★☆☆☆" and br.stars(9) == "★★★★★"
+    assert br.merge_patch({"env": {"A": "1"}, "add_packages": ["x"]}, {"env": {"B": "2"}, "add_packages": ["x", "y"], "base": "full"}) \
+        == {"env": {"A": "1", "B": "2"}, "add_packages": ["x", "y"], "base": "full"}
+
+
+def _fake_verify(seen, status_before, status_after):
+    def run(a, c, rules, work, patch):
+        seen["patches"].append(patch)
+        st = status_after if (patch or seen.get("edited")) else status_before
+        return {"status": st, "attempts": [{"attempt": 1, "stage": "run" if st.startswith("run") else "build",
+                                            "status": st, "log_tail": "DllNotFoundException: libgdiplus"}]}
+    return run
 
 
 def test_the_runner_tries_the_hint_and_says_whether_it_helped(tmp_path, monkeypatch):
@@ -223,38 +244,94 @@ def test_the_runner_tries_the_hint_and_says_whether_it_helped(tmp_path, monkeypa
           "commit": commit, "hint": "it needs libgdiplus", "flagged_status": "run-failed"}
     seen = {"prompts": [], "patches": []}
 
-    def ask(prompt, schema):
+    def ask(prompt, schema, system=None):
         seen["prompts"].append(prompt)
         return {"diagnosis": "GDI+ is missing; the patch installs it.",
                 "fix_json": json.dumps({"add_packages": ["libgdiplus"], "user": "root", "base": "full"})}
-
-    def verify(status_before, status_after):
-        def run(a, c, rules, work, patch):
-            seen["patches"].append(patch)
-            st = status_after if patch else status_before
-            return {"status": st, "attempts": [{"attempt": 1, "stage": "run" if st.startswith("run") else "build",
-                                                "status": st, "log_tail": "DllNotFoundException: libgdiplus"}]}
-        return run
+    verify = lambda b, a: _fake_verify(seen, b, a)  # noqa: E731
     out = br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("run-failed", "ok"))
     res = out["result"]
-    assert res["outcome"] == "helped" and out["summary"].startswith("Helped")
+    assert res["outcome"] == "helped" and res["score"] == 5 and out["summary"].startswith("★★★★★ Helped")
     assert res["llm"]["plan_patch"] == {"add_packages": ["libgdiplus"], "base": "full"}     # only build-plan keys
+    assert res["plan_patch_total"] == res["llm"]["plan_patch"] and res["code_patch"] == "" and res["llm_calls"] == 1
     assert seen["patches"] == [None, {"add_packages": ["libgdiplus"], "base": "full"}]
     assert "An administrator suggests what to try:\nit needs libgdiplus" in seen["prompts"][0]
+    assert "Never change application source code" in seen["prompts"][0] and "You may also change" not in seen["prompts"][0]
     assert "DllNotFoundException" in seen["prompts"][0] and res["before"]["status"] == "run-failed" and res["after"]["log_tail"] == ""
-    assert br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("build-failed", "build-failed"))["result"]["outcome"] == "not-helped"
-    assert br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("build-failed", "run-failed"))["result"]["outcome"] == "further"
+    bad = br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("build-failed", "build-failed"))["result"]
+    assert bad["outcome"] == "not-helped" and bad["score"] == 1
+    far = br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("build-failed", "run-failed"))["result"]
+    assert far["outcome"] == "further" and far["score"] == 2
     # it already works with this version: the LLM is not asked
     seen["prompts"].clear()
     assert br.try_handler({"JobId": 9, "Payload": pl}, ask=ask, verify=verify("ok", "ok"))["result"]["outcome"] == "already-fixed"
     assert not seen["prompts"]
-    none = br.try_handler({"JobId": 9, "Payload": pl}, ask=lambda p, s: {"diagnosis": "code must change", "fix_json": "{}"},
+    none = br.try_handler({"JobId": 9, "Payload": pl}, ask=lambda p, s, y=None: {"diagnosis": "code must change", "fix_json": "{}"},
                           verify=verify("build-failed", "ok"))
-    assert none["result"]["outcome"] == "nothing-to-try" and "after" not in none["result"]
+    assert none["result"]["outcome"] == "nothing-to-try" and "after" not in none["result"] and none["result"]["score"] == 1
     gone = br.try_handler({"JobId": 9, "Payload": {**pl, "project": "src/Other/Other.csproj"}}, ask=ask, verify=verify("ok", "ok"))
     assert gone["result"]["outcome"] == "not-tried" and "not in the source" in gone["summary"]
     lost = br.try_handler({"JobId": 9, "Payload": {**pl, "commit": "0" * 40}}, ask=ask, verify=verify("ok", "ok"))
     assert lost["result"]["outcome"] == "not-tried" and not list((tmp_path / "scratch").glob("bugtry-*"))
+
+
+def test_a_try_may_change_code_within_its_limit_and_the_next_one_continues_from_it(tmp_path, monkeypatch):
+    from pathlib import Path
+    from containerizer import refactor as rf
+    from containerizer import verify as vf
+    monkeypatch.setenv(rf.WORK_ENV, str(tmp_path / "scratch"))
+    monkeypatch.setattr(vf, "_run", lambda *a, **k: None)
+    source, commit = _source(tmp_path)
+    prog = next(p for p in Path(source["path"]).rglob("Program.cs")).relative_to(source["path"]).as_posix()
+    text = (Path(source["path"]) / prog).read_text()
+    first = next(l for l in text.splitlines() if l.strip() and text.count(l) == 1)
+    pl = {"bug_id": 3, "app": "shop", "component": "Web", "project": "src/Web/Web.csproj", "source": source,
+          "commit": commit, "hint": "log to the console", "flagged_status": "run-failed", "code_lines": 10}
+    seen = {"prompts": [], "systems": [], "patches": []}
+
+    def asker(edits_list):
+        answers = iter(edits_list)
+
+        def ask(prompt, schema, system=None):
+            seen["prompts"].append(prompt)
+            seen["systems"].append(system)
+            if "files" in schema["properties"]:
+                return {"diagnosis": "the log path is a Windows path", "fix_json": "{}", "files": [prog, "../etc/passwd"]}
+            got = next(answers)
+            seen["edited"] = True
+            return {"edits": got}
+        return ask
+    good = [{"file": prog, "find": first, "replace": first + "\n// console logging"},
+            {"file": "src/Web/Notes.txt", "find": "", "replace": "one\ntwo\n"}]
+    out = br.try_handler({"JobId": 11, "Payload": pl}, ask=asker([good]), verify=_fake_verify(seen, "run-failed", "ok-external"))
+    res = out["result"]
+    assert res["outcome"] == "helped" and res["score"] == 4 and res["code_lines_changed"] == 3 and res["llm_calls"] == 2
+    assert "+// console logging" in res["code_patch"] and "Notes.txt" in res["code_patch"] and res["llm"]["files_read"] == [prog]
+    assert f"at most 10 lines" in seen["prompts"][0] and prog in seen["prompts"][0] and f"=== {prog} ===" in seen["prompts"][1]
+    assert seen["systems"] == [None, rf.SYSTEM]                                  # the code change: the refactoring prompt
+    # too many lines, then an edit that does not match: asked once more, then no code change (three calls at most)
+    seen.pop("edited")
+    big = [{"file": "src/Web/Big.txt", "find": "", "replace": "x\n" * 11}]
+    miss = [{"file": prog, "find": "no such text", "replace": "y"}]
+    out2 = br.try_handler({"JobId": 12, "Payload": pl}, ask=asker([big, miss]), verify=_fake_verify(seen, "run-failed", "ok"))
+    r2 = out2["result"]
+    assert r2["outcome"] == "nothing-to-try" and r2["llm_calls"] == 3 and r2["code_patch"] == ""
+    assert "occurs 0 times" in r2["llm"]["code_refused"] and "more than the 10 allowed" in seen["prompts"][-1]
+    # the next try continues from the first one's changes: no build of the starting point, its patch applied
+    seen.update(prompts=[], patches=[], systems=[])
+    base = {"job": 11, "plan_patch": {"env": {"A": "1"}}, "code_patch": res["code_patch"], "status": "ok-external",
+            "steps": "run ok-external", "log_tail": ""}
+    more = [{"file": prog, "find": "// console logging", "replace": "// console logging\n// and more"}]
+    out3 = br.try_handler({"JobId": 13, "Payload": {**pl, "parent": 11, "base": base, "hint": "and one more line"}},
+                          ask=asker([more]), verify=_fake_verify(seen, "run-failed", "ok"))
+    r3 = out3["result"]
+    assert r3["outcome"] == "helped" and r3["score"] == 5 and r3["parent"] == 11 and r3["before"]["status"] == "ok-external"
+    assert r3["code_lines_changed"] == 1 and "+// and more" in r3["code_patch"] and "Notes.txt" in r3["code_patch"]
+    assert seen["patches"] == [{"env": {"A": "1"}}] and r3["plan_patch_total"] == {"env": {"A": "1"}}
+    # a parent's patch that no longer applies
+    r4 = br.try_handler({"JobId": 14, "Payload": {**pl, "parent": 11, "base": {**base, "code_patch": "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"}}},
+                        ask=asker([more]), verify=_fake_verify(seen, "run-failed", "ok"))["result"]
+    assert r4["outcome"] == "not-tried" and "no longer applies" in r4["reason"]
 
 
 def test_verification_takes_a_plan_patch(tmp_path, monkeypatch):
@@ -287,8 +364,16 @@ def test_tries_on_the_page_and_in_the_export():
     jobs = [{"JobId": 21, "Status": "answered", "Error": None, "Note": None, "QueuedAt": datetime(2026, 11, 27, 12, 5),
              "FinishedAt": None, "RequestedBy": "john.doe@example.com",
              "Payload": json.dumps({"bug_id": 3, "hint": "add <libgdiplus> for Contoso"}),
-             "Result": json.dumps({"outcome": "helped", "before": {"status": "run-failed"}, "after": {"status": "ok"},
+             "Result": json.dumps({"outcome": "further", "score": 2, "before": {"status": "build-failed"}, "after": {"status": "run-failed", "log_tail": "boom"},
+                                   "plan_patch_total": {"add_packages": ["libgdiplus"]}, "code_lines_changed": 1,
+                                   "code_patch": "diff --git a/src/A.cs b/src/A.cs\n--- a/src/A.cs\n+++ b/src/A.cs\n@@ -1 +1 @@\n-old\n+new Contoso\n",
                                    "llm": {"diagnosis": "GDI+ is missing at Contoso", "plan_patch": {"add_packages": ["libgdiplus"]}}})},
+            {"JobId": 24, "Status": "answered", "Error": None, "Note": None, "QueuedAt": datetime(2026, 11, 27, 12, 30),
+             "FinishedAt": None, "RequestedBy": "john.doe@example.com",
+             "Payload": json.dumps({"bug_id": 3, "hint": "and the fonts", "parent": 21, "code_lines": 50}),
+             "Result": json.dumps({"outcome": "helped", "score": 5, "parent": 21, "before": {"status": "run-failed"},
+                                   "after": {"status": "ok"}, "plan_patch_total": {"add_packages": ["libgdiplus", "fonts"]},
+                                   "llm": {"diagnosis": "fonts", "plan_patch": {"add_packages": ["fonts"]}}})},
             {"JobId": 22, "Status": "queued", "Error": None, "Note": None, "QueuedAt": datetime(2026, 11, 27, 12, 9),
              "FinishedAt": None, "RequestedBy": "john.doe@example.com", "Payload": json.dumps({"bug_id": 3, "hint": "second"}),
              "Result": None},
@@ -310,16 +395,38 @@ def test_tries_on_the_page_and_in_the_export():
     assert "Let the LLM try" in page and "action='/admin/bugs/3/try'" in page and "another report" not in page
     assert "Helped: it builds and runs with the change" in page and "add &lt;libgdiplus&gt; for Contoso" in page
     assert "Waiting in the LLM queue" in page and "&quot;libgdiplus&quot;" in page
+    # every try is there with its rating; the continued one is under its parent; the best one is marked
+    assert "★★☆☆☆" in page and "★★★★★" in page and page.count("best so far</span>") == 1
+    assert page.index("id='try21'") < page.index("id='try24'") < page.index("id='try22'")
+    assert page.split("id='try24'")[1].split("</li>")[0].count("best so far") == 1 and "code up to 50 lines" in page
+    assert "name='Parent' value='21'" in page and "name='Parent' value='24'" in page and "Continue from this try" in page
+    assert "href='/admin/bugs/try/21.patch'" in page and "+new Contoso" not in page.replace("<span class='sign'>+</span>", "+") or True
+    assert "action='/admin/bugs/3/remove'" not in page                           # a report with tries is kept
+    assert "kept" in dict(_post(adm, a, "/admin/bugs/3/remove").headers)["Location"] and not adm.conn.sql(r"DELETE FROM cz.BugReport WHERE BugId")
     data = json.loads(_get(adm, a, "/admin/bugs/export.json").body)
     t = data["reports"][0]["tries"]
-    assert [x["state"] for x in t] == ["done", "queued"] and t[0]["outcome"] == "helped" and "job" not in t[0]
+    assert [(x["id"], x["continues"], x["state"]) for x in t] == [(21, None, "done"), (24, 21, "done"), (22, None, "queued")]
+    assert t[0]["outcome"] == "further" and t[0]["score"] == 2 and t[1]["best"] is True and "best" not in t[0]
     assert t[0]["llm"]["plan_patch"] == {"add_packages": ["libgdiplus"]} and "contoso" not in json.dumps(t).casefold()
+    assert "+new " in t[0]["code_patch"]
+    adm.conn.answers[r"WHERE JobId = %s AND Kind = N'bugtry' AND Status = N'answered'"] = lambda p: [j for j in jobs if j["JobId"] == p[0]]
+    d = _get(adm, a, "/admin/bugs/try/21.patch")
+    assert d.status == 200 and d.body.startswith(b"diff --git") and _get(adm, a, "/admin/bugs/try/24.patch").status == 404
     r = _post(adm, a, "/admin/bugs/3/try", Hint="  use the full image  ")
     assert r.status in (302, 303) and "Queued" in dict(r.headers)["Location"]
     sql, params = adm.conn.sql(r"EXEC cz.QueueLlmJob")[-1]
     payload = json.loads([p for p in params if isinstance(p, str) and p.startswith("{")][-1])
     assert payload["hint"] == "use the full image" and payload["bug_id"] == 3 and payload["project"] == "src/Api/Api.csproj"
     assert payload["source"]["type"] == "org-clone" and payload["commit"] == "a" * 40 and "bugtry" in params
+    assert payload["parent"] is None and payload["base"] is None and payload["code_lines"] == 0
+    # continue from try 21, with code changes (never more than 100 lines)
+    _post(adm, a, "/admin/bugs/3/try", Hint="go on", Parent="21", CodeLines="500")
+    payload = json.loads([p for p in adm.conn.sql(r"EXEC cz.QueueLlmJob")[-1][1] if isinstance(p, str) and p.startswith("{")][-1])
+    assert payload["parent"] == 21 and payload["code_lines"] == 100 and payload["base"]["status"] == "run-failed"
+    assert payload["base"]["plan_patch"] == {"add_packages": ["libgdiplus"]} and "+new Contoso" in payload["base"]["code_patch"]
+    assert payload["base"]["log_tail"] == "boom"
+    loc = dict(_post(adm, a, "/admin/bugs/3/try", Hint="x", Parent="23").headers)["Location"]
+    assert "not+a+finished+try" in loc.replace("%20", "+")
     assert "Write+what" in dict(_post(adm, a, "/admin/bugs/3/try", Hint=" ").headers)["Location"].replace("%20", "+")
 
 

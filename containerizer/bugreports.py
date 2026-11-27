@@ -41,12 +41,23 @@ MAX_HINT = 2000
 KIND = "bugtry"
 PRIORITY = 1700                   # a person asked for it: before the automatic reviews
 OK = ("ok", "ok-external")
+MAX_CODE_LINES = 100              # lines of the application's code one try may change, when the administrator allows it
+MAX_CODE_FILES = 3                # files the LLM may read (and so change) in one try
+MAX_FILE_CHARS = 24000            # of a file shown to the LLM
+MAX_LISTED = 300                  # file names offered to the LLM
+MAX_LLM_CALLS = 3                 # per try: the plan, the code change, and one more when its edits were refused
+MAX_PATCH_CHARS = 200_000
 OUTCOME_TEXT = {"helped": "Helped: it builds and runs with the change",
-                "further": "Got further: it builds with the change, the run still fails",
-                "not-helped": "Did not help: it fails with the change too",
+                "further": "Got further: it gets further with the change, and still fails",
+                "not-helped": "Did not help: it fails as before with the change",
+                "worse": "Worse: it gets less far with the change",
                 "already-fixed": "Already fixed: it builds and runs with this version, without a change",
-                "nothing-to-try": "Nothing to try: the LLM found no build-plan change for it",
+                "nothing-to-try": "Nothing to try: the LLM found no change for it",
                 "not-tried": "Not tried"}
+EDIT_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["edits"],
+               "properties": {"edits": {"type": "array", "items": {
+                   "type": "object", "additionalProperties": False, "required": ["file", "find", "replace"],
+                   "properties": {"file": {"type": "string"}, "find": {"type": "string"}, "replace": {"type": "string"}}}}}}
 TRY_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["diagnosis", "fix_json"],
               "properties": {"diagnosis": {"type": "string", "description": "what fails and what the change does, two sentences"},
                              "fix_json": {"type": "string", "description": "JSON object: the build-plan patch, or {} when no key can do it"}}}
@@ -164,8 +175,8 @@ def flag(conn, component_id: int, note: str, user: str) -> int | None:
         return None
     case = got["case"]
     data = gzip.compress(json.dumps(case, ensure_ascii=False).encode("utf-8"), 6)
+    retire(conn, got["component_id"])
     cur = conn.cursor()
-    cur.execute("DELETE FROM cz.BugReport WHERE ComponentId = %s AND Status = N'open'", (got["component_id"],))
     cur.execute("INSERT cz.BugReport (ApplicationId, ComponentId, AssessmentId, App, Component, VerifyStatus, Note, CreatedBy, "
                 "DataGz) OUTPUT inserted.BugId VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (got["application_id"], got["component_id"], got["assessment_id"], case["application"][:200],
@@ -173,6 +184,28 @@ def flag(conn, component_id: int, note: str, user: str) -> int | None:
                  (user or "")[:200], data))
     row = cur.fetchone()
     return int(row[0] if not isinstance(row, dict) else row["BugId"])
+
+
+def tried(conn, bug_ids) -> set:
+    """The reports that have tries: they are closed, never removed (the history of what was tried stays)."""
+    try:
+        return set(tries(conn, set(bug_ids)))
+    except Exception:  # noqa: BLE001      no LLM queue in this database
+        return set()
+
+
+def retire(conn, component_id: int) -> None:
+    """The component's open reports give way (a new flag, or the flag removed): one with tries is closed and kept,
+    one without is removed."""
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT BugId FROM cz.BugReport WHERE ComponentId = %s AND Status = N'open'", (int(component_id),))
+    ids = [int(r["BugId"]) for r in cur.fetchall()]
+    keep = tried(conn, ids)
+    for i in ids:
+        if i in keep:
+            cur.execute("UPDATE cz.BugReport SET Status = N'closed' WHERE BugId = %s", (i,))
+        else:
+            cur.execute("DELETE FROM cz.BugReport WHERE BugId = %s", (i,))
 
 
 def flagged(admin, app: dict) -> dict:
@@ -223,12 +256,47 @@ def notice_html(code: str) -> str:
 
 # --------------------------------------------------------------------------- let the LLM try
 
-def queue_try(conn, bug_id: int, hint: str) -> tuple[int | None, str]:
-    """Queue a try for a report: (job id or 0 when the same one waits, "") or (None, why not)."""
+def score_of(status: str | None) -> int:
+    """How far a build and run got, 0 to 5: the rating of a try (its stars)."""
+    return {"ok": 5, "ok-external": 4, "finding": 3, "run-failed": 2, "build-failed": 1}.get(str(status or ""), 0)
+
+
+def merge_patch(base: dict | None, more: dict | None) -> dict:
+    """Two build-plan patches as one (lists joined, env merged, the later value for the rest)."""
+    out = json.loads(json.dumps(base or {}))
+    for k, v in (more or {}).items():
+        if isinstance(v, list) and isinstance(out.get(k), list):
+            out[k] = out[k] + [x for x in v if x not in out[k]]
+        elif isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = {**out[k], **v}
+        else:
+            out[k] = v
+    return out
+
+
+def _job_try(conn, job_id: int) -> tuple[dict, dict] | None:
+    """(payload, result) of an answered try."""
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT Payload, Result FROM cz.LlmJob WHERE JobId = %s AND Kind = N'bugtry' AND Status = N'answered'",
+                (int(job_id),))
+    rows = cur.fetchall()
+    if not rows:
+        return None
+    try:
+        return json.loads(rows[0]["Payload"] or "{}"), json.loads(rows[0]["Result"] or "{}")
+    except ValueError:
+        return None
+
+
+def queue_try(conn, bug_id: int, hint: str, parent: int | None = None, code_lines: int = 0) -> tuple[int | None, str]:
+    """Queue a try for a report: (job id or 0 when the same one waits, "") or (None, why not). `parent`: the try
+    to continue from (its changes are the starting point). `code_lines`: how many lines of the application's code
+    the LLM may change (0: the build plan only)."""
     import hashlib
     from .admin_refactor import order_source
     from .llmqueue import SqlJobQueue
     hint = (hint or "").strip()[:MAX_HINT]
+    code_lines = max(0, min(int(code_lines or 0), MAX_CODE_LINES))
     if not hint:
         return None, "Write what the LLM should try."
     cur = conn.cursor(as_dict=True)
@@ -247,26 +315,116 @@ def queue_try(conn, bug_id: int, hint: str) -> tuple[int | None, str]:
         case = json.loads(gzip.decompress(bytes(r["DataGz"])).decode("utf-8"))
     except (OSError, EOFError, ValueError, TypeError):
         return None, "The report cannot be read."
+    base = None
+    if parent:
+        got = _job_try(conn, parent)
+        if got is None or got[0].get("bug_id") != int(r["BugId"]):
+            return None, "That try is not a finished try of this report."
+        res = got[1]
+        last = res.get("after") or res.get("before") or {}
+        base = {"job": int(parent), "plan_patch": res.get("plan_patch_total") or {}, "code_patch": res.get("code_patch") or "",
+                "status": last.get("status"), "steps": last.get("steps") or "", "log_tail": last.get("log_tail") or ""}
     project = (case.get("component") or {}).get("project")
     payload = {"bug_id": int(r["BugId"]), "app": r["App"], "application_id": r["ApplicationId"], "component": r["Component"],
-               "project": project, "source": source, "commit": r["SourceCommit"], "hint": hint,
+               "project": project, "source": source, "commit": r["SourceCommit"], "hint": hint, "code_lines": code_lines,
+               "parent": int(parent) if parent else None, "base": base,
                "flagged_status": (case.get("verification") or {}).get("status")}
-    key = hashlib.sha256(f"{r['BugId']}|{hint}".encode()).hexdigest()
+    key = hashlib.sha256(f"{r['BugId']}|{parent or 0}|{code_lines}|{hint}".encode()).hexdigest()
+    # no ProjectPath: QueueLlmJob skips a waiting job of the same component, and every try is kept
     job = {"Kind": KIND, "Reason": None, "App": r["App"], "Repository": r["App"], "SourceKey": r.get("SourceKey"),
            "ApplicationId": r["ApplicationId"], "AssessmentId": r["AssessmentId"], "Component": r["Component"],
-           "ProjectPath": project, "RuleVerdict": None, "Priority": PRIORITY, "DedupeKey": key, "Model": None,
-           "RequestedBy": None, "InputChars": 12000 + len(hint), "Payload": payload}
+           "ProjectPath": None, "RuleVerdict": None, "Priority": PRIORITY, "DedupeKey": key, "Model": None,
+           "RequestedBy": None, "InputChars": 12000 + len(hint) + (40000 if code_lines else 0), "Payload": payload}
     return SqlJobQueue(None).add_with(conn, job), ""
 
 
-def try_prompt(app: str, component: str, kind: str, plan: dict, stage: str, log_tail: str, hint: str) -> str:
+def try_prompt(app: str, component: str, kind: str, plan: dict, stage: str, log_tail: str, hint: str,
+               files: list[str] | None = None, code_lines: int = 0) -> str:
     from .ai import PLAN_HELP, PLAN_RULES
+    rules = PLAN_RULES if not code_lines else "Never run as root or disable security settings."
+    code = ""
+    if code_lines:
+        code = (f"\n\nYou may also change the application's code, at most {code_lines} lines in all, when the build plan "
+                "alone cannot do it. Name in `files` the files you need to read first (at most "
+                f"{MAX_CODE_FILES}, from this list; [] when the plan patch is enough):\n" + "\n".join(files or []))
     return (f"A generated container for {app}/{component} failed at the {stage} stage.\n\nBuild plan:\n"
             f"{json.dumps({k: v for k, v in plan.items() if k not in ('applied', 'reasons')}, indent=1, default=str)[:6000]}\n\n"
-            f"{PLAN_HELP.get(kind, PLAN_HELP['dotnet'])}\n{PLAN_RULES}\n\nLog tail:\n{log_tail[-8000:]}\n\n"
+            f"{PLAN_HELP.get(kind, PLAN_HELP['dotnet'])}\n{rules}\n\nLog tail:\n{log_tail[-8000:]}\n\n"
             f"An administrator suggests what to try:\n{hint}\n\nGive the build-plan patch that carries out the suggestion "
             "(only the keys above; {} when none of them can do it), and say in the diagnosis what fails and what the "
-            "patch does.")
+            f"patch does.{code}")
+
+
+def edit_prompt(hint: str, diagnosis: str, log_tail: str, texts: dict[str, str], code_lines: int, problem: str = "") -> str:
+    shown = "\n\n".join(f"=== {p} ===\n{t}" for p, t in texts.items())
+    return (f"The build or run of an application fails in its container.\n\nLog tail:\n{log_tail[-4000:]}\n\n"
+            f"Diagnosis so far: {diagnosis}\n\nAn administrator suggests what to try:\n{hint}\n\n"
+            f"Change the files below to carry it out, with at most {code_lines} changed lines in all. Each edit names a "
+            "file, the exact text to find (it must occur exactly once in that file; an empty `find` with a file that "
+            "does not exist creates it) and its replacement. Change nothing else, keep the code style, and give no edit "
+            "when the code should stay as it is.\n"
+            + (f"\nYour earlier edits were not applied: {problem}\n" if problem else "") + f"\n{shown}")
+
+
+def code_files(repo, app_root, project: str) -> list[str]:
+    """The text-like files the LLM may ask for: the component's folder first, then the rest of the application."""
+    from pathlib import PurePosixPath
+    from . import refactor as rf
+    raw = rf.git(["ls-files", "-z", "--", "."], cwd=app_root, safe_dir=repo).stdout.decode("utf-8", "replace")
+    skip = (".png", ".jpg", ".jpeg", ".gif", ".ico", ".dll", ".exe", ".pdf", ".zip", ".woff", ".woff2", ".ttf", ".snk",
+            ".pfx", ".lock", ".min.js", ".min.css", ".map")
+    paths = [p for p in raw.split("\0") if p and not p.casefold().endswith(skip) and "/node_modules/" not in "/" + p]
+    d = PurePosixPath(project or "").parent.as_posix()
+    own = [p for p in paths if d not in ("", ".") and p.startswith(d + "/")]
+    return (own + [p for p in paths if p not in set(own)])[:MAX_LISTED]
+
+
+def apply_edits(repo, app_root, edits: list, code_lines: int, listed: set) -> tuple[int, str]:
+    """Apply the LLM's edits to the scratch copy: (changed lines, "") or (0, why not; the copy is put back)."""
+    from . import refactor as rf
+    todo = []
+    for ed in edits[:40]:
+        rel = rf.safe_rel(str(ed.get("file") or "")) if isinstance(ed, dict) else None
+        if rel is None:
+            return 0, f"{ed.get('file') if isinstance(ed, dict) else ed!r} is not a path inside the application"
+        f = app_root / rel
+        find, new = str(ed.get("find") or ""), str(ed.get("replace") or "")
+        if not find:
+            if f.exists():
+                return 0, f"{rel} exists: an edit of it needs the text to find"
+            todo.append((f, None, new, rel))
+            continue
+        if rel not in listed or not f.is_file():
+            return 0, f"{rel} is not one of the application's files"
+        text = f.read_text(encoding="utf-8", errors="surrogateescape")
+        if text.count(find) != 1:
+            return 0, f"the text to find occurs {text.count(find)} times in {rel}, not once"
+        bad = rf.harmful_edit(rel, find, new)
+        if bad:
+            return 0, f"{rel}: {'; '.join(bad)}"
+        todo.append((f, find, new, rel))
+    undo, lines = [], 0
+    for f, find, new, rel in todo:
+        if find is None:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(new, encoding="utf-8")
+            undo.append((f, None))
+            lines += len(new.splitlines())
+        else:
+            text = f.read_text(encoding="utf-8", errors="surrogateescape")
+            undo.append((f, text))
+            f.write_text(text.replace(find, new, 1), encoding="utf-8", errors="surrogateescape")
+    # against the index: the changes of the try it continues are staged, so only this try's lines count
+    stat = rf.git(["diff", "--numstat"], cwd=repo, safe_dir=repo).stdout.decode("utf-8", "replace")
+    lines += sum(int(x) for row in stat.splitlines() for x in row.split("\t")[:2] if x.isdigit())
+    if lines > code_lines:
+        for f, text in reversed(undo):
+            if text is None:
+                f.unlink(missing_ok=True)
+            else:
+                f.write_text(text, encoding="utf-8", errors="surrogateescape")
+        return 0, f"the edits change {lines} lines, more than the {code_lines} allowed"
+    return lines, ""
 
 
 def _result_of(r: dict) -> dict:
@@ -278,19 +436,24 @@ def _result_of(r: dict) -> dict:
 
 
 def outcome_of(before: str, after: str | None) -> str:
-    if before in OK:
-        return "already-fixed"
     if after is None:
-        return "nothing-to-try"
+        return "already-fixed" if before in OK else "nothing-to-try"
+    if before in OK:
+        return "helped" if after in OK else "worse"
     if after in OK:
         return "helped"
-    return "further" if before == "build-failed" and after != "build-failed" else "not-helped"
+    if score_of(after) > score_of(before):
+        return "further"
+    return "worse" if score_of(after) < score_of(before) else "not-helped"
 
 
 def try_handler(job: dict, ask=None, verify=None) -> dict:
-    """The LLM queue's handler of `bugtry` jobs: build and run the component as it is; if it still fails, ask the LLM
-    for a build-plan patch that follows the administrator's hint and build and run with it. `ask(prompt, schema)` and
-    `verify(a, c, rules, work, plan_patch)` are replaced in tests."""
+    """The LLM queue's handler of `bugtry` jobs. From the flagged commit, or from the changes of the try it continues
+    (payload base): build and run the component as it is (a continued try takes its parent's result), ask the LLM
+    for a build-plan patch that follows the administrator's hint and, when code changes are allowed (code_lines),
+    for edits of up to that many lines in files it asks to read; build and run with the changes. At most
+    MAX_LLM_CALLS calls. The result keeps everything the next try needs to continue: the plan patch and the code
+    change so far. `ask(prompt, schema, system)` and `verify(a, c, rules, work, plan_patch)` are replaced in tests."""
     import os
     import shutil
     import tempfile
@@ -303,26 +466,38 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
     from .rules import load_rules
     pl = job["Payload"]
     progress = job.get("_progress") or (lambda text: None)
-    ask = ask or (lambda prompt, schema: ai.ask_json(prompt, schema, feature="bugtry-queued",
-                                                     max_tokens=ai.SHORT_ANSWER_TOKENS))
+    ask = ask or (lambda prompt, schema, system=None: ai.ask_json(prompt, schema, feature="bugtry-queued", system=system,
+                                                                  max_tokens=ai.SHORT_ANSWER_TOKENS if system is None else None))
     verify = verify or (lambda a, c, rules, work, patch: vf.verify_component(a, c, rules, work=work, plan_patch=patch))
-    base = Path(os.environ.get(rf.WORK_ENV) or tempfile.gettempdir())
-    base.mkdir(parents=True, exist_ok=True)
-    work = Path(tempfile.mkdtemp(prefix=f"bugtry-{int(job.get('JobId') or 0)}-", dir=base))
+    base = pl.get("base") or {}
+    code_lines = max(0, min(int(pl.get("code_lines") or 0), MAX_CODE_LINES))
+    tmp = Path(os.environ.get(rf.WORK_ENV) or tempfile.gettempdir())
+    tmp.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix=f"bugtry-{int(job.get('JobId') or 0)}-", dir=tmp))
     result = {"bug_id": pl.get("bug_id"), "hint": pl.get("hint"), "flagged_status": pl.get("flagged_status"),
-              "outcome": "not-tried"}
+              "parent": pl.get("parent"), "code_lines_allowed": code_lines, "outcome": "not-tried", "score": 0,
+              "plan_patch_total": base.get("plan_patch") or {}, "code_patch": base.get("code_patch") or "", "llm_calls": 0}
 
     def done(reason: str = "") -> dict:
         if reason:
             result["reason"] = reason[:600]
         text = OUTCOME_TEXT[result["outcome"]] + (f" ({reason})" if reason and result["outcome"] == "not-tried" else "")
-        return {"result": result, "summary": text[:400], "note": None}
+        return {"result": result, "summary": f"{stars(result['score'])} {text}"[:400], "note": None}
+
+    def named(a):
+        return next((x for x in a.components if x.project.rel == pl.get("project")), None)
     try:
         progress("preparing the source")
         repo, app_root = rf.checkout(pl["source"], pl.get("commit"), work / "src")
+        if base.get("code_patch"):
+            p = rf.git(["apply", "--whitespace=nowarn", "-"], cwd=repo, check=False, safe_dir=repo,
+                       input=base["code_patch"].encode("utf-8", "surrogateescape"))
+            if p.returncode != 0:
+                return done("the code change of the try it continues no longer applies")
+            rf.git(["add", "-A", "."], cwd=repo, safe_dir=repo)
         a = assess(app_root)
         a.repo.name = f"bugtry-{int(pl.get('bug_id') or 0)}"
-        c = next((x for x in a.components if x.project.rel == pl.get("project")), None)
+        c = named(a)
         if c is None or not buildable(c):
             return done("the component is not one this version builds in a Linux container"
                         if c is not None else "the component's project is not in the source")
@@ -331,18 +506,33 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
             vf._run(["docker", "info"], 60)
         except Exception as ex:  # noqa: BLE001
             return done(f"Docker is not available: {ex}")
-        progress("building and running it as it is")
-        before = verify(a, c, rules, work / "before", None)
-        result["before"] = _result_of(before)
-        if before.get("status") in OK:
-            result["outcome"] = "already-fixed"
-            return done()
+        if base.get("status"):                  # continued: its parent's result is where it starts
+            result["before"] = {k: base.get(k) for k in ("status", "steps", "log_tail")}
+            stage = "run" if base["status"] == "run-failed" else "build"
+        else:
+            progress("building and running it as it is")
+            before = verify(a, c, rules, work / "before", None)
+            result["before"] = _result_of(before)
+            stage = str(((before.get("attempts") or [{}])[-1]).get("stage") or "build")
+            if before.get("status") in OK:
+                result.update(outcome="already-fixed", score=score_of(before.get("status")))
+                return done()
+        result["score"] = score_of(result["before"]["status"])
+        log_tail = str(result["before"].get("log_tail") or "")
         rf._stop_if_cancelled()
         progress("asking the LLM what to change")
         kind = c.project.kind_hint if c.project.kind_hint in ai.PLAN_KEYS and c.role != "spa" else "dotnet"
-        last = (before.get("attempts") or [{}])[-1]
-        answer = ask(try_prompt(a.name, c.name, kind, make_plan(a, c, rules), str(last.get("stage") or "build"),
-                                str(last.get("log_tail") or ""), str(pl.get("hint") or "")), TRY_SCHEMA)
+        plan = make_plan(a, c, rules)
+        if base.get("plan_patch"):
+            from .generate import merge_plan
+            merge_plan(plan, base["plan_patch"])
+        listed = code_files(repo, app_root, str(pl.get("project") or "")) if code_lines else []
+        schema = TRY_SCHEMA if not code_lines else {**TRY_SCHEMA, "required": ["diagnosis", "fix_json", "files"],
+                                                    "properties": {**TRY_SCHEMA["properties"],
+                                                                   "files": {"type": "array", "items": {"type": "string"}}}}
+        answer = ask(try_prompt(a.name, c.name, kind, plan, stage, log_tail, str(pl.get("hint") or ""), listed, code_lines),
+                     schema, None)
+        result["llm_calls"] += 1
         try:
             fix = json.loads(answer.get("fix_json") or "{}")
         except ValueError:
@@ -353,14 +543,51 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
             result["llm"]["model"] = ai.model_name(None)
         except Exception:  # noqa: BLE001
             pass
-        if not fix:
+        changed = 0
+        want = [p for p in (answer.get("files") or []) if p in set(listed)][:MAX_CODE_FILES] if code_lines else []
+        if want:
+            rf._stop_if_cancelled()
+            texts = {}
+            for p in want:
+                t = (app_root / p).read_text(encoding="utf-8", errors="replace")
+                texts[p] = t if len(t) <= MAX_FILE_CHARS else t[:MAX_FILE_CHARS] + "\n[... the rest of the file is left out ...]"
+            result["llm"]["files_read"] = want
+            problem = ""
+            while result["llm_calls"] < MAX_LLM_CALLS:
+                progress("asking the LLM for the code change")
+                ans = ask(edit_prompt(str(pl.get("hint") or ""), result["llm"]["diagnosis"], log_tail, texts, code_lines,
+                                      problem), EDIT_SCHEMA, rf.SYSTEM)
+                result["llm_calls"] += 1
+                edits = ans.get("edits") or []
+                if not edits:
+                    problem = ""
+                    break
+                changed, problem = apply_edits(repo, app_root, edits, code_lines, set(listed))
+                if not problem:
+                    break
+            if problem:
+                result["llm"]["code_refused"] = problem[:400]
+        result["code_lines_changed"] = changed
+        if not fix and not changed:
             result["outcome"] = "nothing-to-try"
             return done()
+        if changed:
+            rf.git(["add", "-A", "."], cwd=repo, safe_dir=repo)
+            result["code_patch"] = rf.git(["diff", "--cached", "HEAD"], cwd=repo, safe_dir=repo).stdout.decode(
+                "utf-8", "surrogateescape")[:MAX_PATCH_CHARS]
+            a = assess(app_root)
+            a.repo.name = f"bugtry-{int(pl.get('bug_id') or 0)}"
+            c = named(a)
+            if c is None or not buildable(c):
+                result["outcome"] = "worse"
+                return done("with the code change the component is no longer one that is built in a Linux container")
+        result["plan_patch_total"] = merge_patch(base.get("plan_patch"), fix)
         rf._stop_if_cancelled()
         progress("building and running it with the change")
-        after = verify(a, c, rules, work / "after", fix)
+        after = verify(a, c, rules, work / "after", result["plan_patch_total"] or None)
         result["after"] = _result_of(after)
-        result["outcome"] = outcome_of(str(before.get("status")), str(after.get("status")))
+        result["outcome"] = outcome_of(str(result["before"]["status"]), str(after.get("status")))
+        result["score"] = score_of(after.get("status"))
         return done()
     except rf.RefactorError as ex:
         return done(str(ex))
@@ -369,8 +596,14 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
             shutil.rmtree(work, ignore_errors=True)
 
 
+def stars(score: int) -> str:
+    score = max(0, min(int(score or 0), 5))
+    return "★" * score + "☆" * (5 - score)
+
+
 def tries(conn, bug_ids=None) -> dict:
-    """{BugId: [the tries of the report, oldest first]}: the hint, where the job is, and its result."""
+    """{BugId: [the tries of the report, oldest first]}: the hint, where the job is, and its result. `best` marks
+    the try to continue from: the highest rating, then the smallest change, then the earliest."""
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT JobId, Status, Error, Note, Payload, Result, QueuedAt, FinishedAt, RequestedBy FROM cz.LlmJob "
                 "WHERE Kind = N'bugtry' ORDER BY JobId")
@@ -384,47 +617,85 @@ def tries(conn, bug_ids=None) -> dict:
         if bug is None or (bug_ids is not None and bug not in bug_ids):
             continue
         state = {"answered": "done", "failed": "failed", "skipped": "cancelled"}.get(r["Status"], r["Status"])
-        t = {"job": int(r["JobId"]), "hint": pl.get("hint") or "", "state": state,
+        t = {"id": int(r["JobId"]), "continues": pl.get("parent"), "hint": pl.get("hint") or "", "state": state,
+             "code_lines_allowed": int(pl.get("code_lines") or 0),
              "asked_at": r["QueuedAt"].isoformat() if r.get("QueuedAt") else None, "asked_by": r.get("RequestedBy")}
         if r["Status"] == "answered":
-            t.update({k: res.get(k) for k in ("outcome", "reason", "before", "llm", "after") if res.get(k) is not None})
+            t.update({k: res.get(k) for k in ("outcome", "score", "reason", "before", "llm", "after", "plan_patch_total",
+                                              "code_patch", "code_lines_changed", "llm_calls") if res.get(k) is not None})
         elif r["Status"] == "failed":
             t["error"] = r.get("Error") or ""
         out.setdefault(int(bug), []).append(t)
+    for items in out.values():
+        ranked = [t for t in items if t["state"] == "done" and t.get("outcome") in ("helped", "further", "not-helped", "worse")]
+        if ranked:
+            best = max(ranked, key=lambda t: (int(t.get("score") or 0), -len(t.get("code_patch") or ""),
+                                              -len(json.dumps(t.get("plan_patch_total") or {})), -t["id"]))
+            if int(best.get("score") or 0) > 0:
+                best["best"] = True
     return out
 
 
+def _try_form(bug_id: int, csrf: str, parent: int | None = None) -> str:
+    lines = "".join(f"<option value='{n}'>{'No code changes' if not n else f'Code changes: up to {n} lines'}</option>"
+                    for n in (0, 25, 50, MAX_CODE_LINES))
+    ph = ("What should the LLM try next, on top of this try?" if parent else
+          "What should the LLM try? For example: build on the full image and add the package libgdiplus")
+    return (f"<form method='post' action='{BASE}/{int(bug_id)}/try' class='formrow'>{csrf}"
+            + (f"<input type='hidden' name='Parent' value='{int(parent)}'>" if parent else "")
+            + f"<textarea name='Hint' rows='2' maxlength='{MAX_HINT}' required style='min-width:520px' "
+            f"aria-label='What the LLM should try' placeholder='{e(ph)}'></textarea>"
+            f"<select name='CodeLines' aria-label='Code changes'>{lines}</select>"
+            f"<button class='secondary'>{'Continue from this try' if parent else 'Let the LLM try'}</button></form>")
+
+
 def tries_html(bug: dict, items: list[dict], csrf: str) -> str:
-    """A report's tries and the form for the next one (the Bug reports page)."""
-    rows = []
+    """A report's tries, each under the one it continues, and the forms for the next one (the Bug reports page)."""
+    from .admin_refactor import render_diff
+    kids: dict = {}
     for t in items:
+        kids.setdefault(t.get("continues") if any(x["id"] == t.get("continues") for x in items) else None, []).append(t)
+    is_open = bug["Status"] == "open"
+
+    def one(t: dict) -> str:
+        more = ""
         if t["state"] == "done":
             oc = t.get("outcome") or "not-tried"
-            cls = {"helped": "good", "already-fixed": "good", "not-helped": "bad"}.get(oc, "")
-            head = (f"<b class='{cls}'>{e(OUTCOME_TEXT.get(oc, oc))}</b>"
+            cls = {"helped": "good", "already-fixed": "good", "not-helped": "bad", "worse": "bad"}.get(oc, "")
+            head = (f"<span class='cb-stars' title='How far the build and run got: {int(t.get('score') or 0)} of 5'>"
+                    f"{stars(t.get('score') or 0)}</span> <b class='{cls}'>{e(OUTCOME_TEXT.get(oc, oc))}</b>"
+                    + (" <span class='chip'>best so far</span>" if t.get("best") else "")
                     + (f" <span class='muted'>({e(t['reason'])})</span>" if t.get("reason") else ""))
             llm = t.get("llm") or {}
-            more = ""
             if llm:
                 more += (f"<div class='small'>{e(llm.get('diagnosis') or '')}</div>"
-                         + (f"<pre class='code'>{e(json.dumps(llm.get('plan_patch'), indent=1))}</pre>" if llm.get("plan_patch") else ""))
+                         + (f"<pre class='code'>{e(json.dumps(llm.get('plan_patch'), indent=1))}</pre>" if llm.get("plan_patch") else "")
+                         + (f"<div class='small muted'>Code change not applied: {e(llm['code_refused'])}</div>"
+                            if llm.get("code_refused") else ""))
+            if t.get("code_patch"):
+                n = int(t.get("code_lines_changed") or 0)
+                more += (f"<details><summary class='small'>The code change so far ({n} line{'s' if n != 1 else ''} in this try) · "
+                         f"<a href='{BASE}/try/{int(t['id'])}.patch'>Download .patch</a></summary>{render_diff(t['code_patch'], 600)}</details>")
             if (t.get("after") or {}).get("log_tail"):
                 more += f"<details><summary class='small'>The log with the change</summary><pre class='code'>{e(t['after']['log_tail'])}</pre></details>"
+            if is_open and oc not in ("not-tried", "already-fixed"):
+                more += f"<details><summary class='small'>Continue from this try</summary>{_try_form(bug['BugId'], csrf, t['id'])}</details>"
         else:
             head = {"queued": "Waiting in the LLM queue", "approval": "Waiting for approval on the LLM queue page",
                     "running": "Running", "failed": "Failed", "cancelled": "Cancelled"}.get(t["state"], t["state"])
             head = f"<b>{e(head)}</b>" + (f" <span class='muted'>{e(t.get('error') or '')}</span>" if t.get("error") else "")
-            more = ""
-        rows.append(f"<li><span class='small muted'><a href='/admin/llm-queue/{int(t['job'])}'>#{int(t['job'])}</a></span> "
-                    f"“{e(t['hint'])}”<br>{head}{more}</li>")
-    form = (f"<form method='post' action='{BASE}/{int(bug['BugId'])}/try' class='formrow'>{csrf}"
-            "<textarea name='Hint' rows='2' maxlength='2000' required style='min-width:520px' aria-label='What the LLM should try' "
-            "placeholder='What should the LLM try? For example: build on the full image and add the package libgdiplus'></textarea>"
-            "<button class='secondary'>Let the LLM try</button></form>") if bug["Status"] == "open" else ""
+        code = f" <span class='muted small'>· code up to {t['code_lines_allowed']} lines</span>" if t.get("code_lines_allowed") else ""
+        sub = "".join(one(k) for k in kids.get(t["id"], []))
+        return (f"<li id='try{int(t['id'])}'><span class='small muted'><a href='/admin/llm-queue/{int(t['id'])}'>#{int(t['id'])}</a></span> "
+                f"“{e(t['hint'])}”{code}<br>{head}{more}" + (f"<ul class='checks'>{sub}</ul>" if sub else "") + "</li>")
+    rows = "".join(one(t) for t in kids.get(None, []))
+    form = _try_form(bug["BugId"], csrf) if is_open else ""
     if not rows and not form:
         return ""
     return (f"<section class='diff' style='padding:10px 14px'><b>#{int(bug['BugId'])} {e(bug['App'])} / {e(bug['Component'])}</b>"
-            + (f"<ul class='checks'>{''.join(rows)}</ul>" if rows else "") + form + "</section>")
+            + (f"<ul class='checks'>{rows}</ul>" if rows else "")
+            + (f"<p class='small muted' style='margin:8px 0 2px'>A new try from the flagged commit:</p>{form}" if form else "")
+            + "</section>")
 
 
 # --------------------------------------------------------------------------- the export
@@ -455,7 +726,7 @@ def export(conn, ids: list[int] | None = None, rand=None, now: datetime | None =
     try:                                    # what the LLM was asked to try, and whether it helped
         done = tries(conn, {b["id"] for b in bugs})
         for b in bugs:
-            b["tries"] = [{k: v for k, v in t.items() if k not in ("job", "asked_by")} for t in done.get(b["id"], [])]
+            b["tries"] = [{k: v for k, v in t.items() if k != "asked_by"} for t in done.get(b["id"], [])]
     except Exception:  # noqa: BLE001      no LLM queue in this database
         pass
     keywords = parse_keywords(keywords_text(conn))
@@ -490,6 +761,10 @@ def show(adm, conn, s, a, flash: str = "") -> "Response":  # noqa: F821
         print(f"bug reports: {type(ex).__name__}: {ex}", file=sys.stderr)
         return Response(200, adm._shell(s, a, "Bug reports", "bugs", f"<p class='note'>{e(NOTICES['unavailable'][1])}</p>"))
     csrf = adm._csrf(s)
+    try:
+        done = tries(conn, {int(r["BugId"]) for r in rows})
+    except Exception:  # noqa: BLE001      no LLM queue in this database
+        done = {}
     body = ["<p class='lead'>Builds and runs that failed in a way that looks like a fault of Containerizer itself, flagged "
             "on the applications' pages. Export them as one JSON file and give it to whoever maintains Containerizer: it "
             "holds each case's Dockerfile, build command, logs and findings, not the source code.</p>"]
@@ -502,9 +777,10 @@ def show(adm, conn, s, a, flash: str = "") -> "Response":  # noqa: F821
             acts = (f"<form method='post' action='{BASE}/{int(r['BugId'])}/"
                     f"{'close' if r['Status'] == 'open' else 'reopen'}' class='inline'>{csrf}<button class='link'>"
                     f"{'Close' if r['Status'] == 'open' else 'Reopen'}</button></form> · "
-                    f"<a href='{BASE}/export.json?id={int(r['BugId'])}'>JSON</a> · "
-                    f"<form method='post' action='{BASE}/{int(r['BugId'])}/remove' class='inline'>{csrf}"
-                    "<button class='link danger'>Remove</button></form>")
+                    f"<a href='{BASE}/export.json?id={int(r['BugId'])}'>JSON</a>"
+                    + ("" if int(r["BugId"]) in done else
+                       f" · <form method='post' action='{BASE}/{int(r['BugId'])}/remove' class='inline'>{csrf}"
+                       "<button class='link danger'>Remove</button></form>"))
             trs.append(f"<tr id='bug{int(r['BugId'])}'><td>#{int(r['BugId'])}</td><td>{app} / {e(r['Component'])}</td>"
                        f"<td>{e(VERIFY_TEXT.get(r['VerifyStatus'], r['VerifyStatus'] or ''))}</td>"
                        f"<td class='small'>{e(r.get('Note') or '')}</td>"
@@ -517,17 +793,17 @@ def show(adm, conn, s, a, flash: str = "") -> "Response":  # noqa: F821
     else:
         body.append("<p class='muted'>Nothing is flagged. On an application's page, a component whose build or run failed "
                     "has <b>Flag as a Containerizer bug</b> in its <i>Build and run</i> block.</p>")
-    try:
-        done = tries(conn, {int(r["BugId"]) for r in rows})
-    except Exception:  # noqa: BLE001
-        done = {}
     blocks = "".join(tries_html(r, done.get(int(r["BugId"]), []), csrf) for r in rows)
     if blocks:
         body.append("<h2 id='tries'>Let the LLM try</h2><p class='small'>Write what to try for a report. The LLM queue builds "
-                    "and runs the component as it is, asks the LLM for a change of the build plan (base image, packages, "
-                    "environment, writable folders, build arguments; never the application's code) that follows your "
-                    "words, and builds and runs it again with that change. Whether it helped is kept with the report and "
-                    "goes into the export.</p>" + blocks)
+                    "and runs the component, asks the LLM for a change that follows your words, and builds and runs it again "
+                    "with that change. The change is to the build plan (base image, packages, environment, writable "
+                    f"folders, build arguments) and, when you allow it, to the application's code: at most {MAX_CODE_LINES} "
+                    f"lines in {MAX_CODE_FILES} files per try, and at most {MAX_LLM_CALLS} LLM calls. Every try is kept. The "
+                    "stars say how far the build and run got (★ the build fails, ★★ it builds and the run fails, ★★★★★ it "
+                    "builds and runs), and <b>best so far</b> marks the try to go on from; <i>Continue from this try</i> "
+                    "starts the next one from any try's changes, not only the latest. A report with tries cannot be "
+                    "removed, only closed.</p>" + blocks)
     n = len(parse_keywords(kw))
     body.append("<h2 id='export'>Export</h2>"
                 + (f"<p><a class='button' href='{BASE}/export.json' download>Export JSON</a> <span class='muted small'>"
@@ -565,6 +841,14 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
         return Response(200, json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"),
                         [("Content-Disposition", f'attachment; filename="{name}"'), ("X-Content-Type-Options", "nosniff")],
                         ctype="application/json; charset=utf-8")
+    m = re.fullmatch(r"(\d{1,9})\.patch", parts[2]) if len(parts) == 3 and parts[1] == "try" and method == "GET" else None
+    if m:
+        got = _job_try(conn, int(m[1]))
+        if got is None or not got[1].get("code_patch"):
+            return nf
+        return Response(200, got[1]["code_patch"].encode("utf-8", "surrogateescape"),
+                        [("Content-Disposition", f'attachment; filename="containerizer-bug-try-{int(m[1])}.patch"'),
+                         ("X-Content-Type-Options", "nosniff")], ctype="text/x-diff; charset=utf-8")
     if method != "POST":
         return nf
     if len(parts) == 3 and parts[1] == "prompts":
@@ -602,7 +886,7 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
                 bug = flag(conn, cid, form.get("Note", [""])[0], s.user)
                 conn.commit()
                 return back("flagged" if bug else "nothing")
-            cur.execute("DELETE FROM cz.BugReport WHERE ComponentId = %s AND Status = N'open'", (cid,))
+            retire(conn, cid)
             conn.commit()
             return back("unflagged")
         except Exception as ex:  # noqa: BLE001      a database from before schema 65
@@ -612,7 +896,10 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
     if len(parts) == 3 and re.fullmatch(r"\d{1,9}", parts[1]) and parts[2] == "try":
         from urllib.parse import quote
         try:
-            jid, why = queue_try(conn, int(parts[1]), form.get("Hint", [""])[0])
+            parent, lines = form.get("Parent", [""])[0], form.get("CodeLines", ["0"])[0]
+            jid, why = queue_try(conn, int(parts[1]), form.get("Hint", [""])[0],
+                                 int(parent) if re.fullmatch(r"\d{1,9}", parent) else None,
+                                 int(lines) if re.fullmatch(r"\d{1,3}", lines) else 0)
             conn.commit()
         except Exception as ex:  # noqa: BLE001
             conn.rollback()
@@ -622,6 +909,8 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
         return redirect(f"{BASE}?msg={quote(msg)}#tries")
     if len(parts) == 3 and re.fullmatch(r"\d{1,9}", parts[1]) and parts[2] in ("close", "reopen", "remove"):
         cur = conn.cursor()
+        if parts[2] == "remove" and tried(conn, [int(parts[1])]):
+            return redirect(f"{BASE}?msg=A+report+with+tries+is+kept:+close+it+instead.")
         if parts[2] == "remove":
             cur.execute("DELETE FROM cz.BugReport WHERE BugId = %s", (int(parts[1]),))
         else:
