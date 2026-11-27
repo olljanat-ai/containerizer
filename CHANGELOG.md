@@ -17,7 +17,6 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   cases and exports them as one JSON file for whoever maintains Containerizer. **Anonymization keywords** (one
   per line) are replaced everywhere in the export by random words, the same word for the same keyword within a
   file ([docs/bug-reports.md](docs/bug-reports.md)).
-
 - **New: browse the code of a refactoring order.** **Browse the code** on the order's page shows the application's
   files at the assessed commit and with the patch, like a repository browser: a folder tree with the files the
   patch adds, changes and removes marked, any file with its changed lines highlighted, both sides next to each
