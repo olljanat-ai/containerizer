@@ -8,6 +8,19 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.7 (2026-11-27)
+
+- **Fixed: a NuGet.Config that names a folder of a Windows machine as a package source stopped restore with
+  NU1301.** Visual Studio's offline packages (`C:\Program Files (x86)\Microsoft SDKs\NuGetPackages\`), a share
+  (`\\server\packages`) or `%ProgramFiles%\...` is, in a Linux build, a folder under the config's own that does not
+  exist (*The local source '/src/.../C:/Program Files (x86)/Microsoft SDKs/NuGetPackages/' doesn't exist*). The
+  generated Dockerfile now disables such sources before restore (`dotnet nuget disable source`, reason
+  `nuget-windows-sources`); the repository is not changed. Packages only that folder has must come from a feed.
+- **Fixed: a package that requires one Node.js release (`"engines": {"node": "24.5.0"}`) failed the build on every
+  line.** The images have each line's newest release, so the line the range names is used and the declaration is
+  not enforced at install time, as for a range no image satisfies. The same for a range that ends inside a line
+  (`~24.5.0`, `<24.6`).
+
 ## 0.54.6 (2026-11-27)
 
 - **Fixed: a Windows path as a writable folder stopped the test run with `docker: invalid spec ... too many
