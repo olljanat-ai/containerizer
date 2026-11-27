@@ -69,7 +69,7 @@ def test_the_admin_page_and_roles():
     case = {"application": "shop", "component": {"name": "Api"}, "verification": {"status": "build-failed", "detail": "x"},
             "attempts": [{"attempt": 1, "stage": "build", "log": "restore from https://pkgs.contoso.example/ failed"}]}
     adm.conn.answers = {r"DATALENGTH\(DataGz\)": rows, r"SELECT Keywords FROM cz.BugReportSettings": [{"Keywords": "contoso\nshop"}],
-                        r"SELECT BugId, Status, Note, CreatedAt, DataGz": [
+                        r"SELECT BugId, Status, Note, Labels, CreatedAt, DataGz": [
                             {"BugId": 3, "Status": "open", "Note": "seen at Contoso", "CreatedAt": datetime(2026, 11, 27, 12, 0),
                              "DataGz": gzip.compress(json.dumps(case).encode())}]}
     a = adm.sessions.create("a@example.com", "A", True)
@@ -87,6 +87,8 @@ def test_the_admin_page_and_roles():
     assert _post(adm, a, "/admin/bugs/keywords", Keywords="b\nContoso\ncontoso").status in (302, 303)
     assert adm.conn.sql(r"BugReportSettings")[-1][1] == ("Contoso",)
     assert _post(adm, a, "/admin/bugs/3/close").status in (302, 303) and adm.conn.sql(r"SET Status = %s")[-1][1] == ("closed", 3)
+    assert "resolved" in dict(_post(adm, a, "/admin/bugs/3/resolve").headers)["Location"]
+    assert adm.conn.sql(r"SET Status = %s")[-1][1] == ("resolved", 3)
     assert _post(adm, a, "/admin/bugs/3/remove").status in (302, 303) and adm.conn.sql(r"DELETE FROM cz.BugReport WHERE BugId")
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     assert _get(adm, op, "/admin/bugs").status == 403 and _post(adm, op, "/admin/bugs/flag/5").status == 403
@@ -175,6 +177,15 @@ def test_flagging_and_exporting_in_sql_server():
     c.execute("SELECT BugId, Status FROM cz.BugReport ORDER BY BugId")
     assert [tuple(r) for r in c.fetchall()] == [(bug, "closed"), (newer, "open")]
     assert br.tries(adm, {bug})[bug][0]["id"] == jid and br._job_try(adm, jid)[1]["outcome"] == "helped"
+    # resolved, labels, and the views of the export
+    c.execute("UPDATE cz.BugReport SET Status = N'resolved', Labels = N'nuget,windows path' WHERE BugId = %s", (bug,))
+    adm.commit()
+    assert [r["id"] for r in br.export(adm)["reports"]] == [newer]
+    assert [(r["id"], r["labels"]) for r in br.export(adm, view="closed", label="NuGet")["reports"]] == [(bug, ["nuget", "windows path"])]
+    assert br.export(adm, view="all", label="other")["reports"] == []
+    with pytest.raises(Exception):
+        c.execute("UPDATE cz.BugReport SET Status = N'gone' WHERE BugId = %s", (bug,))
+    adm.rollback()
     # a replaced system prompt: the administrator writes it, the writer (worker, queue runner) reads it
     assert llmprompts.save(adm, "refactor", "Keep every appender.", "john.doe@example.com") == "saved"
     adm.commit()
@@ -381,7 +392,7 @@ def test_tries_on_the_page_and_in_the_export():
              "RequestedBy": None, "Payload": json.dumps({"bug_id": 99, "hint": "another report"}), "Result": "{}"}]
     adm.conn.answers = {r"DATALENGTH\(DataGz\)": rows, r"SELECT Keywords FROM cz.BugReportSettings": [{"Keywords": "contoso"}],
                         r"WHERE Kind = N'bugtry'": jobs,
-                        r"SELECT BugId, Status, Note, CreatedAt, DataGz": [
+                        r"SELECT BugId, Status, Note, Labels, CreatedAt, DataGz": [
                             {"BugId": 3, "Status": "open", "Note": "", "CreatedAt": datetime(2026, 11, 27, 12, 0),
                              "DataGz": gzip.compress(json.dumps(case).encode())}],
                         r"FROM cz.BugReport b JOIN cz.Application": [
@@ -489,3 +500,62 @@ def test_system_prompts_on_the_page_and_in_the_export():
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     assert _post(adm, op, "/admin/bugs/prompts/refactor", Text="x").status == 403
     assert rf.SYSTEM
+
+
+# --------------------------------------------------------------------------- views and labels
+
+def test_labels():
+    assert br.parse_labels(" nuget,  NuGet , windows path,C#/.NET ,") == (["nuget", "windows path", "C#/.NET"], "")
+    assert br.parse_labels("")[0] == [] and br.split_labels("a,b") == ["a", "b"] and br.split_labels(None) == []
+    assert br.parse_labels("<b>")[0] is None and "not a label" in br.parse_labels("<b>")[1]
+    assert br.parse_labels("x" * 31)[0] is None and "At most 8" in br.parse_labels(",".join("abcdefghi"))[1]
+
+
+def test_open_and_closed_views_and_labels_on_the_page():
+    pytest.importorskip("jwt")
+    from test_refactor import _post
+    from test_refactor import adm as adm_fixture
+    adm = adm_fixture.__wrapped__()
+
+    def row(i, status, labels, app):
+        return {"BugId": i, "ApplicationId": 7, "ComponentId": i, "App": app, "Component": "Api", "VerifyStatus": "build-failed",
+                "Status": status, "Note": None, "Labels": labels, "CreatedBy": "john.doe@example.com",
+                "CreatedAt": datetime(2026, 11, 27, 12, 0), "ExportedAt": None, "Bytes": 9}
+    rows = [row(4, "open", "nuget,windows path", "shop"), row(3, "open", "node", "portal"), row(2, "resolved", "nuget", "billing"),
+            row(1, "closed", None, "legacy")]
+    case = lambda app: gzip.compress(json.dumps({"application": app, "component": {"name": "Api"}}).encode())  # noqa: E731
+    adm.conn.answers = {r"DATALENGTH\(DataGz\)": rows,
+                        r"SELECT BugId, Status, Note, Labels, CreatedAt, DataGz": [
+                            {"BugId": r["BugId"], "Status": r["Status"], "Note": "", "Labels": r["Labels"],
+                             "CreatedAt": r["CreatedAt"], "DataGz": case(r["App"])} for r in reversed(rows)]}
+    a = adm.sessions.create("a@example.com", "A", True)
+    get = lambda query="": adm.handle("GET", "/admin/bugs", query, {"Cookie": f"{adm.cookie}={a}"}, b"").body  # noqa: E731
+    table = lambda page: page.split("<tbody>")[1].split("</tbody>")[0] if "<tbody>" in page else ""  # noqa: E731
+    page = get()                                                                 # open by default
+    assert "class='chip on' href='/admin/bugs'>Open (2)" in page and "Resolved and closed (2)" in page and "All (4)" in page
+    assert "shop" in table(page) and "portal" in table(page) and "billing" not in table(page) and "legacy" not in table(page)
+    assert "action='/admin/bugs/4/resolve'" in page and "action='/admin/bugs/4/close'" in page and "/reopen'" not in page
+    assert "nuget (1)" in page and "windows path (1)" in page and "node (1)" in page
+    assert "value='nuget, windows path'" in page and "href='/admin/bugs/export.json'" in page and "the 2 reports shown" in page
+    closed = get("view=closed")
+    assert "billing" in table(closed) and "legacy" in table(closed) and "shop" not in table(closed)
+    assert "action='/admin/bugs/2/reopen'" in closed and "/resolve'" not in closed and ">resolved<" in closed and ">closed<" in closed
+    assert "name='Back' value='/admin/bugs?view=closed'" in closed and "href='/admin/bugs/export.json?view=closed'" in closed
+    assert "action='/admin/bugs/2/try'" not in closed                             # no new tries for a closed report
+    both = get("view=all&label=NuGet")                                            # a label, whatever its case
+    assert "shop" in table(both) and "billing" in table(both) and "portal" not in table(both) and "All (2)" in both
+    assert "No open report with the label “node”" in get("label=node").replace("portal", "") or "portal" in table(get("label=node"))
+    assert "No resolved and closed report with the label “node”." in get("view=closed&label=node")
+    # the export follows the view and the label
+    ex = lambda query: [r["id"] for r in json.loads(adm.handle(  # noqa: E731
+        "GET", "/admin/bugs/export.json", query, {"Cookie": f"{adm.cookie}={a}"}, b"").body)["reports"]]
+    assert ex("") == [3, 4] and ex("view=closed") == [1, 2] and ex("view=all&label=nuget") == [2, 4]
+    assert json.loads(adm.handle("GET", "/admin/bugs/export.json", "", {"Cookie": f"{adm.cookie}={a}"}, b"").body)["reports"][1]["labels"] \
+        == ["nuget", "windows path"]
+    # saving labels, and back to the view it was done in
+    r = _post(adm, a, "/admin/bugs/4/labels", Labels="nuget, Restore", Back="/admin/bugs?view=all&label=nuget")
+    assert dict(r.headers)["Location"].startswith("/admin/bugs?view=all&label=nuget&msg=Labels")
+    assert adm.conn.sql(r"SET Labels = %s")[-1][1] == ("nuget,Restore", 4)
+    n = len(adm.conn.sql(r"SET Labels"))
+    r = _post(adm, a, "/admin/bugs/4/labels", Labels="<x>", Back="https://evil.example/")
+    assert dict(r.headers)["Location"].startswith("/admin/bugs?msg=") and len(adm.conn.sql(r"SET Labels")) == n

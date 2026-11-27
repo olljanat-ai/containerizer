@@ -14,7 +14,9 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   fault of Containerizer (**Flag as a Containerizer bug** in its *Build and run* block, with a note). The case is
   copied then (schema 65, `cz.BugReport`: the component's facts, every attempt's Dockerfile, build command and log,
   its findings; not the source code), since the next scan replaces the logs. **Admin → Bug reports** lists the
-  cases and exports them as one JSON file for whoever maintains Containerizer. **Anonymization keywords** (one
+  cases (the open ones by default; **Resolved** and **Close** move a report to the *Resolved and closed* view,
+  and free-text **labels** with a filter keep similar cases together) and exports the ones shown as one JSON file
+  for whoever maintains Containerizer. **Anonymization keywords** (one
   per line) are replaced everywhere in the export by random words, the same word for the same keyword within a
   file. **Let the LLM try** takes your words on what to try for a report: the LLM queue (kind `bugtry`) builds
   and runs the component as it is, asks the LLM for a change that follows them (the build plan, and when you allow

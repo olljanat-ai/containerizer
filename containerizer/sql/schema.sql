@@ -3648,8 +3648,9 @@ CREATE TABLE [${schema}].BugReport (
     Component     nvarchar(200)  NOT NULL,
     VerifyStatus  nvarchar(40)   NULL,
     Status        nvarchar(10)   NOT NULL CONSTRAINT DF_BugReport_Status DEFAULT N'open'
-                  CONSTRAINT CK_BugReport_Status CHECK (Status IN (N'open', N'closed')),
+                  CONSTRAINT CK_BugReport_Status CHECK (Status IN (N'open', N'resolved', N'closed')),
     Note          nvarchar(1000) NULL,
+    Labels        nvarchar(400)  NULL,              -- comma-separated, as the administrators wrote them
     CreatedBy     nvarchar(200)  NULL,
     CreatedAt     datetime2(0)   NOT NULL CONSTRAINT DF_BugReport_CreatedAt DEFAULT SYSUTCDATETIME(),
     ExportedAt    datetime2(0)   NULL,

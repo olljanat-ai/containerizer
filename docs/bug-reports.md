@@ -29,8 +29,17 @@ tries is closed and kept instead, see below).
 
 ## Bug reports
 
-**Admin → Bug reports** lists the flagged cases with their notes. **Close** keeps a report out of the next export
-once it is dealt with, **JSON** exports one report alone, and **Remove** deletes it.
+**Admin → Bug reports** lists the flagged cases with their notes.
+
+- **Views.** The page opens on the **Open** reports. **Resolved and closed** shows the ones that are dealt with,
+  and **All** shows everything; each view says how many it has.
+- **Resolved** marks a report as fixed, **Close** puts one aside that will not be fixed or was not a bug after
+  all, and **Reopen** brings either back. Both leave the Open view, and neither removes anything: a resolved or
+  closed report keeps its case and its tries.
+- **Labels.** Give a report labels (comma-separated, such as `nuget, windows path`) to keep similar cases
+  together. The labels of the view are listed above the table with their counts; click one to see only its
+  reports, in any view. Labels are free text, up to eight a report.
+- **JSON** exports one report alone, and **Remove** deletes a report that has no tries.
 
 ![Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords](images/admin-bug-reports.png#only-light){ .cz-shot }
 ![Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords](images/admin-bug-reports-dark.png#only-dark){ .cz-shot }
@@ -150,7 +159,8 @@ Open the file before you send it: a name that is not listed stays.
 
 ## The export
 
-**Export JSON** downloads the open reports as `containerizer-bug-reports-<date>.json`:
+**Export JSON** downloads the reports shown (the view and the label you are looking at; the open ones by default)
+as `containerizer-bug-reports-<date>.json`:
 
 ```json
 {
@@ -161,7 +171,8 @@ Open the file before you send it: a name that is not listed stays.
  "replaced_system_prompts": {"refactor": "..."},
  "reports": [
   {
-   "id": 3, "status": "open", "flagged_at": "2026-11-27T12:04:00", "note": "restore asks a Windows folder",
+   "id": 3, "status": "open", "flagged_at": "2026-11-27T12:04:00", "labels": ["nuget", "windows path"],
+   "note": "restore asks a Windows folder",
    "application": "maple-3f9a", "rating": "B", "commit": "abcdef012345", "scanned_with": "0.54.6",
    "component": {"name": "maple-3f9a.Api", "project": "src/maple-3f9a.Api/maple-3f9a.Api.csproj", "role": "web"},
    "verification": {"status": "build-failed", "detail": "..."},

@@ -65,6 +65,10 @@ NOTICES = {"flagged": ("ok", "Flagged as a suspected Containerizer bug: it is on
            "unflagged": ("ok", "The flag was removed."),
            "nothing": ("bad", "This component has no failed build or run in its latest scan."),
            "unavailable": ("bad", "Bug reports need the database of version 0.54.7 or later.")}
+STATUSES = ("open", "resolved", "closed")
+VIEWS = {"open": ("Open", ("open",)), "closed": ("Resolved and closed", ("resolved", "closed")), "all": ("All", STATUSES)}
+MAX_LABELS = 8
+LABEL_RE = re.compile(r"[\w .+#/-]{1,30}")
 WORDS = ("amber", "birch", "cedar", "delta", "ember", "fjord", "grove", "harbor", "iris", "juniper", "kestrel", "lumen",
          "maple", "nectar", "onyx", "pebble", "quartz", "raven", "sorrel", "tundra", "umber", "violet", "willow", "zephyr")
 
@@ -113,6 +117,28 @@ def anonymize(value, replace):
     if isinstance(value, dict):
         return {replace(k) if isinstance(k, str) else k: anonymize(v, replace) for k, v in value.items()}
     return value
+
+
+# --------------------------------------------------------------------------- labels
+
+def split_labels(stored) -> list[str]:
+    return [x for x in (stored or "").split(",") if x]
+
+
+def parse_labels(text: str) -> tuple[list[str] | None, str]:
+    """The labels of a form field (comma-separated): (labels, "") or (None, what is wrong)."""
+    out: list[str] = []
+    for raw in (text or "").split(","):
+        t = " ".join(raw.split())
+        if not t:
+            continue
+        if not LABEL_RE.fullmatch(t):
+            return None, f"“{t[:40]}” is not a label: letters, digits, spaces and . + # / - , at most 30 characters."
+        if t.casefold() not in {x.casefold() for x in out}:
+            out.append(t)
+    if len(out) > MAX_LABELS:
+        return None, f"At most {MAX_LABELS} labels a report."
+    return out, ""
 
 
 # --------------------------------------------------------------------------- flagging
@@ -692,7 +718,7 @@ def tries_html(bug: dict, items: list[dict], csrf: str) -> str:
     form = _try_form(bug["BugId"], csrf) if is_open else ""
     if not rows and not form:
         return ""
-    return (f"<section class='diff' style='padding:10px 14px'><b>#{int(bug['BugId'])} {e(bug['App'])} / {e(bug['Component'])}</b>"
+    return (f"<section class='diff' id='tries{int(bug['BugId'])}' style='padding:10px 14px'><b>#{int(bug['BugId'])} {e(bug['App'])} / {e(bug['Component'])}</b>"
             + (f"<ul class='checks'>{rows}</ul>" if rows else "")
             + (f"<p class='small muted' style='margin:8px 0 2px'>A new try from the flagged commit:</p>{form}" if form else "")
             + "</section>")
@@ -707,22 +733,28 @@ def keywords_text(conn) -> str:
     return (rows[0]["Keywords"] or "") if rows else ""
 
 
-def export(conn, ids: list[int] | None = None, rand=None, now: datetime | None = None) -> dict:
-    """The open reports (or the ones named) as the export's JSON value, anonymized with the stored keywords."""
+def export(conn, ids: list[int] | None = None, rand=None, now: datetime | None = None, view: str = "open",
+           label: str = "") -> dict:
+    """The open reports (or those of another view, with a label, or the ones named) as the export's JSON value,
+    anonymized with the stored keywords."""
     from . import __version__
     cur = conn.cursor(as_dict=True)
-    cur.execute("SELECT BugId, Status, Note, CreatedAt, DataGz FROM cz.BugReport "
-                + ("WHERE BugId IN (" + ",".join(str(int(i)) for i in ids) + ")" if ids else "WHERE Status = N'open'")
+    cur.execute("SELECT BugId, Status, Note, Labels, CreatedAt, DataGz FROM cz.BugReport "
+                + ("WHERE BugId IN (" + ",".join(str(int(i)) for i in ids) + ")" if ids else "")
                 + " ORDER BY BugId")
     bugs = []
     for r in cur.fetchall():
+        labels = split_labels(r.get("Labels"))
+        if not ids and (r["Status"] not in VIEWS.get(view, VIEWS["open"])[1]
+                        or (label and label.casefold() not in {x.casefold() for x in labels})):
+            continue
         try:
             case = json.loads(gzip.decompress(bytes(r["DataGz"])).decode("utf-8"))
         except (OSError, EOFError, ValueError, TypeError):
             continue
         bugs.append({"id": int(r["BugId"]), "status": r["Status"],
                      "flagged_at": r["CreatedAt"].isoformat() if r.get("CreatedAt") else None,
-                     "note": r.get("Note") or "", **case, "tries": []})
+                     "labels": labels, "note": r.get("Note") or "", **case, "tries": []})
     try:                                    # what the LLM was asked to try, and whether it helped
         done = tries(conn, {b["id"] for b in bugs})
         for b in bugs:
@@ -747,49 +779,85 @@ def _when(d) -> str:
     return d.strftime("%Y-%m-%d %H:%M") + " UTC" if d else ""
 
 
-def show(adm, conn, s, a, flash: str = "") -> "Response":  # noqa: F821
+def show(adm, conn, s, a, q: dict | None = None) -> "Response":  # noqa: F821
+    from urllib.parse import urlencode
     from .admin import Response
     from .webui import VERIFY_TEXT
+    q = q or {}
+    flash = q.get("msg", [""])[0][:200]
+    view = q.get("view", ["open"])[0]
+    view = view if view in VIEWS else "open"
+    label = " ".join(q.get("label", [""])[0].split())[:30]
     cur = conn.cursor(as_dict=True)
     try:
-        cur.execute("SELECT BugId, ApplicationId, ComponentId, App, Component, VerifyStatus, Status, Note, CreatedBy, CreatedAt, "
-                    "ExportedAt, DATALENGTH(DataGz) AS Bytes FROM cz.BugReport ORDER BY CASE Status WHEN N'open' THEN 0 ELSE 1 END, "
-                    "BugId DESC")
-        rows = cur.fetchall()
+        cur.execute("SELECT BugId, ApplicationId, ComponentId, App, Component, VerifyStatus, Status, Note, Labels, CreatedBy, "
+                    "CreatedAt, ExportedAt, DATALENGTH(DataGz) AS Bytes FROM cz.BugReport ORDER BY BugId DESC")
+        every = cur.fetchall()
         kw = keywords_text(conn)
     except Exception as ex:  # noqa: BLE001      a database from before schema 65
         print(f"bug reports: {type(ex).__name__}: {ex}", file=sys.stderr)
         return Response(200, adm._shell(s, a, "Bug reports", "bugs", f"<p class='note'>{e(NOTICES['unavailable'][1])}</p>"))
     csrf = adm._csrf(s)
+
+    def has(r, lab: str) -> bool:
+        return not lab or lab.casefold() in {x.casefold() for x in split_labels(r.get("Labels"))}
+    in_view = [r for r in every if r["Status"] in VIEWS[view][1]]
+    rows = [r for r in in_view if has(r, label)]
     try:
-        done = tries(conn, {int(r["BugId"]) for r in rows})
+        done = tries(conn, {int(r["BugId"]) for r in every})
     except Exception:  # noqa: BLE001      no LLM queue in this database
         done = {}
+    here = lambda **kw_: BASE + (("?" + urlencode({k: v for k, v in kw_.items() if v and (k, v) != ("view", "open")}))  # noqa: E731
+                                 if any(v and (k, v) != ("view", "open") for k, v in kw_.items()) else "")
+    back = f"<input type='hidden' name='Back' value='{e(here(view=view, label=label))}'>"
     body = ["<p class='lead'>Builds and runs that failed in a way that looks like a fault of Containerizer itself, flagged "
             "on the applications' pages. Export them as one JSON file and give it to whoever maintains Containerizer: it "
             "holds each case's Dockerfile, build command, logs and findings, not the source code.</p>"]
-    open_n = sum(1 for r in rows if r["Status"] == "open")
+    views = " ".join(f"<a class='chip{' on' if k == view else ''}' href='{e(here(view=k, label=label))}'>{e(t)} "
+                     f"({sum(1 for r in every if r['Status'] in st and has(r, label))})</a>" for k, (t, st) in VIEWS.items())
+    counts: dict = {}
+    for r in in_view:
+        for x in split_labels(r.get("Labels")):
+            counts[x] = counts.get(x, 0) + 1
+    labels = " ".join(f"<a class='chip{' on' if x.casefold() == label.casefold() else ''}' "
+                      f"href='{e(here(view=view, label='' if x.casefold() == label.casefold() else x))}'>{e(x)} ({n})</a>"
+                      for x, n in sorted(counts.items(), key=lambda kv: kv[0].casefold()))
+    body.append(f"<p class='chips'>{views}</p>" + (f"<p class='chips small'><span class='label'>Labels</span> {labels}</p>"
+                                                   if labels else ""))
+    open_n = len(rows)
     if rows:
         trs = []
         for r in rows:
+            bid = int(r["BugId"])
             app = (f"<a href='/app/{int(r['ApplicationId'])}#c{int(r['ComponentId'] or 0)}'>{e(r['App'])}</a>"
                    if r.get("ApplicationId") else e(r["App"]))
-            acts = (f"<form method='post' action='{BASE}/{int(r['BugId'])}/"
-                    f"{'close' if r['Status'] == 'open' else 'reopen'}' class='inline'>{csrf}<button class='link'>"
-                    f"{'Close' if r['Status'] == 'open' else 'Reopen'}</button></form> · "
-                    f"<a href='{BASE}/export.json?id={int(r['BugId'])}'>JSON</a>"
-                    + ("" if int(r["BugId"]) in done else
-                       f" · <form method='post' action='{BASE}/{int(r['BugId'])}/remove' class='inline'>{csrf}"
-                       "<button class='link danger'>Remove</button></form>"))
-            trs.append(f"<tr id='bug{int(r['BugId'])}'><td>#{int(r['BugId'])}</td><td>{app} / {e(r['Component'])}</td>"
-                       f"<td>{e(VERIFY_TEXT.get(r['VerifyStatus'], r['VerifyStatus'] or ''))}</td>"
-                       f"<td class='small'>{e(r.get('Note') or '')}</td>"
+
+            def act(what: str, text: str, cls: str = "link") -> str:
+                return (f"<form method='post' action='{BASE}/{bid}/{what}' class='inline'>{csrf}{back}"
+                        f"<button class='{cls}'>{text}</button></form>")
+            acts = ([act("resolve", "Resolved"), act("close", "Close")] if r["Status"] == "open" else [act("reopen", "Reopen")])
+            acts.append(f"<a href='{BASE}/export.json?id={bid}'>JSON</a>")
+            if bid not in done:
+                acts.append(act("remove", "Remove", "link danger"))
+            mine = split_labels(r.get("Labels"))
+            lab = (" ".join(f"<a class='chip' href='{e(here(view=view, label=x))}'>{e(x)}</a>" for x in mine)
+                   + f"<form method='post' action='{BASE}/{bid}/labels' class='inline'>{csrf}{back}"
+                   f"<input name='Labels' value='{e(', '.join(mine))}' maxlength='300' size='22' placeholder='labels, comma-separated' "
+                   f"aria-label='Labels of report {bid}'> <button class='link'>Save</button></form>")
+            n_tries = len(done.get(bid, []))
+            trs.append(f"<tr id='bug{bid}'><td>#{bid}</td><td>{app} / {e(r['Component'])}"
+                       + (f"<br><a class='small' href='#tries{bid}'>{n_tries} tr{'ies' if n_tries != 1 else 'y'}</a>" if n_tries else "")
+                       + f"</td><td>{e(VERIFY_TEXT.get(r['VerifyStatus'], r['VerifyStatus'] or ''))}</td>"
+                       f"<td class='small'>{e(r.get('Note') or '')}<div>{lab}</div></td>"
                        f"<td class='small'>{e(r.get('CreatedBy') or '')}<br><span class='muted'>{_when(r.get('CreatedAt'))}</span></td>"
-                       f"<td>{'open' if r['Status'] == 'open' else 'closed'}"
+                       f"<td>{e(r['Status'])}"
                        + (f"<br><span class='muted small'>exported {_when(r['ExportedAt'])}</span>" if r.get("ExportedAt") else "")
-                       + f"</td><td class='small nowrap'>{acts}</td></tr>")
-        body.append("<table><thead><tr><th></th><th>Application / component</th><th>Failed</th><th>Note</th><th>Flagged by</th>"
-                    f"<th>Status</th><th></th></tr></thead><tbody>{''.join(trs)}</tbody></table>")
+                       + f"</td><td class='small nowrap'>{' · '.join(acts)}</td></tr>")
+        body.append("<table><thead><tr><th></th><th>Application / component</th><th>Failed</th><th>Note and labels</th>"
+                    f"<th>Flagged by</th><th>Status</th><th></th></tr></thead><tbody>{''.join(trs)}</tbody></table>")
+    elif every:
+        body.append(f"<p class='muted'>No {'report' if view == 'all' else VIEWS[view][0].lower() + ' report'}"
+                    + (f" with the label “{e(label)}”" if label else "") + ".</p>")
     else:
         body.append("<p class='muted'>Nothing is flagged. On an application's page, a component whose build or run failed "
                     "has <b>Flag as a Containerizer bug</b> in its <i>Build and run</i> block.</p>")
@@ -806,9 +874,10 @@ def show(adm, conn, s, a, flash: str = "") -> "Response":  # noqa: F821
                     "removed, only closed.</p>" + blocks)
     n = len(parse_keywords(kw))
     body.append("<h2 id='export'>Export</h2>"
-                + (f"<p><a class='button' href='{BASE}/export.json' download>Export JSON</a> <span class='muted small'>"
-                   f"the {open_n} open report{'s' if open_n != 1 else ''}, with {n} keyword{'s' if n != 1 else ''} "
-                   "replaced</span></p>" if open_n else "<p class='muted'>No open report to export.</p>"))
+                + (f"<p><a class='button' href='{e(BASE + '/export.json' + here(view=view, label=label)[len(BASE):])}' download>"
+                   f"Export JSON</a> <span class='muted small'>the {open_n} report{'s' if open_n != 1 else ''} shown above"
+                   f", with {n} keyword{'s' if n != 1 else ''} replaced</span></p>" if open_n
+                   else "<p class='muted'>No report to export in this view.</p>"))
     body.append("<h2 id='keywords'>Anonymization keywords</h2><p class='small'>One per line: company, product, project, "
                 "host and people's names, anything the export must not carry. Each is replaced everywhere in the export "
                 "(logs, paths, Dockerfiles, names, your notes) by a random word, the same word for the same keyword within "
@@ -828,15 +897,17 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
         return Response(403, adm._shell(s, a, "Not allowed", "", "<p>Only administrators handle bug reports.</p>"))
     nf = Response(404, page("Not found", "<h1>Not found</h1>"))
     if len(parts) == 1 and method == "GET":
-        return show(adm, conn, s, a, q.get("msg", [""])[0][:200])
+        return show(adm, conn, s, a, q)
     if len(parts) == 2 and parts[1] == "export.json" and method == "GET":
         raw = (q.get("id") or [""])[0]
         ids = [int(raw)] if re.fullmatch(r"\d{1,9}", raw) else None
-        data = export(conn, ids)
-        cur = conn.cursor()
-        cur.execute("UPDATE cz.BugReport SET ExportedAt = SYSUTCDATETIME() WHERE "
-                    + ("BugId = %s" if ids else "Status = N'open'"), (ids[0],) if ids else None)
-        conn.commit()
+        data = export(conn, ids, view=q.get("view", ["open"])[0], label=" ".join(q.get("label", [""])[0].split())[:30])
+        got = [int(b["id"]) for b in data["reports"]]
+        if got:
+            cur = conn.cursor()
+            cur.execute("UPDATE cz.BugReport SET ExportedAt = SYSUTCDATETIME() WHERE BugId IN ("
+                        + ",".join(str(i) for i in got) + ")")
+            conn.commit()
         name = f"containerizer-bug-reports-{datetime.now(timezone.utc):%Y%m%d-%H%M}.json"
         return Response(200, json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"),
                         [("Content-Disposition", f'attachment; filename="{name}"'), ("X-Content-Type-Options", "nosniff")],
@@ -907,15 +978,27 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
             jid, why = None, "The LLM queue could not take it."
         msg = why or ("Queued: the LLM queue page shows how far it is." if jid else "The same try already waits.")
         return redirect(f"{BASE}?msg={quote(msg)}#tries")
-    if len(parts) == 3 and re.fullmatch(r"\d{1,9}", parts[1]) and parts[2] in ("close", "reopen", "remove"):
+    if len(parts) == 3 and re.fullmatch(r"\d{1,9}", parts[1]) and parts[2] in ("resolve", "close", "reopen", "remove", "labels"):
+        from urllib.parse import quote
+        bid = int(parts[1])
+        target = form.get("Back", [""])[0]
+        target = target if target == BASE or target.startswith(BASE + "?") else BASE      # this page only
+        say = lambda text: redirect(target + ("&" if "?" in target else "?") + "msg=" + quote(text))  # noqa: E731
         cur = conn.cursor()
-        if parts[2] == "remove" and tried(conn, [int(parts[1])]):
-            return redirect(f"{BASE}?msg=A+report+with+tries+is+kept:+close+it+instead.")
+        if parts[2] == "labels":
+            labels, why = parse_labels(form.get("Labels", [""])[0])
+            if labels is None:
+                return say(why)
+            cur.execute("UPDATE cz.BugReport SET Labels = %s WHERE BugId = %s", (",".join(labels) or None, bid))
+            conn.commit()
+            return say("Labels saved.")
+        if parts[2] == "remove" and tried(conn, [bid]):
+            return say("A report with tries is kept: close it instead.")
         if parts[2] == "remove":
-            cur.execute("DELETE FROM cz.BugReport WHERE BugId = %s", (int(parts[1]),))
+            cur.execute("DELETE FROM cz.BugReport WHERE BugId = %s", (bid,))
         else:
             cur.execute("UPDATE cz.BugReport SET Status = %s WHERE BugId = %s",
-                        ("closed" if parts[2] == "close" else "open", int(parts[1])))
+                        ({"resolve": "resolved", "close": "closed", "reopen": "open"}[parts[2]], bid))
         conn.commit()
-        return redirect(f"{BASE}?msg=" + {"close": "Closed.", "reopen": "Reopened.", "remove": "Removed."}[parts[2]])
+        return say({"resolve": "Marked resolved.", "close": "Closed.", "reopen": "Reopened.", "remove": "Removed."}[parts[2]])
     return nf
