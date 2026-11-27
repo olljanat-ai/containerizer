@@ -36,6 +36,10 @@ tries is closed and kept instead, see below).
 - **Resolved** marks a report as fixed, **Close** puts one aside that will not be fixed or was not a bug after
   all, and **Reopen** brings either back. Both leave the Open view, and neither removes anything: a resolved or
   closed report keeps its case and its tries.
+- **Resolved automatically.** An open report is marked resolved by itself, the next time this page is opened, when
+  all three hold: one of its tries got five stars, the application's latest scan rates it **A**, and the latest
+  sandbox check found the component deployed and healthy. The status then says *automatically: ...*. A report a
+  person has set a status on, a reopened one included, is left alone.
 - **Labels.** Give a report labels (comma-separated, such as `nuget, windows path`) to keep similar cases
   together. The labels of the view are listed above the table with their counts; click one to see only its
   reports, in any view. Labels are free text, up to eight a report.
@@ -65,9 +69,11 @@ tests the idea for you:
 
 - **The build plan**, always: the base image, OS packages, environment variables, writable folders, build
   arguments, files removed in the build, the runtime line.
-- **The application's code**, when you choose *Code changes: up to 25, 50 or 100 lines*. The LLM first names up to
-  three files it needs to read (from the application's file list), then gives edits of those files; together they
-  may change at most the lines you allowed. Edits that change more, that do not match the file, or that remove
+- **The application's code**, up to the number of lines you choose: 25, **50 (the default)**, 100, 200, 500 or
+  1,000, or *No code changes*. The LLM first names the files it needs to read (from the application's file list:
+  up to three, or six when it may change more than 100 lines), then gives edits of those files; together they may
+  change at most the lines you allowed. A larger allowance means a longer answer from the LLM, and with a slow
+  self-hosted LLM a longer wait. Edits that change more, that do not match the file, or that remove
   what the application does are refused; the LLM gets one more chance, then the try goes on without a code change.
 
 A try makes at most three LLM calls and two builds, so it cannot run for long. The scan's own Dockerfile text is

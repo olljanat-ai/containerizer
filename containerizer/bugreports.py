@@ -41,8 +41,15 @@ MAX_HINT = 2000
 KIND = "bugtry"
 PRIORITY = 1700                   # a person asked for it: before the automatic reviews
 OK = ("ok", "ok-external")
-MAX_CODE_LINES = 100              # lines of the application's code one try may change, when the administrator allows it
-MAX_CODE_FILES = 3                # files the LLM may read (and so change) in one try
+MAX_CODE_LINES = 1000             # lines of the application's code one try may change, when the administrator allows it
+CODE_LINE_CHOICES = (0, 25, 50, 100, 200, 500, 1000)
+DEFAULT_CODE_LINES = 50
+MAX_CODE_FILES = 6                # files the LLM may read (and so change) in one try that may change over 100 lines
+
+
+def code_files_allowed(code_lines: int) -> int:
+    """How many files the LLM may read (and so change) in a try: three, and six when it may change over 100 lines."""
+    return 3 if code_lines <= 100 else MAX_CODE_FILES
 MAX_FILE_CHARS = 24000            # of a file shown to the LLM
 MAX_LISTED = 300                  # file names offered to the LLM
 MAX_LLM_CALLS = 3                 # per try: the plan, the code change, and one more when its edits were refused
@@ -229,9 +236,32 @@ def retire(conn, component_id: int) -> None:
     keep = tried(conn, ids)
     for i in ids:
         if i in keep:
-            cur.execute("UPDATE cz.BugReport SET Status = N'closed' WHERE BugId = %s", (i,))
+            cur.execute("UPDATE cz.BugReport SET Status = N'closed', StatusNote = N'closed when the component was flagged "
+                        "again or its flag was removed' WHERE BugId = %s", (i,))
         else:
             cur.execute("DELETE FROM cz.BugReport WHERE BugId = %s", (i,))
+
+
+AUTO_NOTE = "automatically: a try got five stars, the application rates A and the component runs healthy in the sandbox"
+
+
+def auto_resolve(conn) -> list[int]:
+    """Mark resolved the open reports that are settled: one of their tries got five stars, the application's latest
+    scan rates it A, and the latest sandbox check found the component deployed and healthy. Only reports nobody
+    set a status on (a reopened one stays open). The ids resolved."""
+    cur = conn.cursor(as_dict=True)
+    cur.execute("SELECT b.BugId FROM cz.BugReport b JOIN cz.vApplicationLatest a ON a.ApplicationId = b.ApplicationId "
+                "JOIN cz.vSandboxLatest s ON s.ApplicationId = b.ApplicationId AND s.ComponentId = b.ComponentId "
+                "WHERE b.Status = N'open' AND b.StatusNote IS NULL AND a.Rating = 'A' AND s.Status = N'healthy'")
+    ids = [int(r["BugId"]) for r in cur.fetchall()]
+    if not ids:
+        return []
+    done = tries(conn, set(ids))
+    ids = [i for i in ids if any(int(t.get("score") or 0) >= 5 for t in done.get(i, []))]
+    for i in ids:
+        cur.execute("UPDATE cz.BugReport SET Status = N'resolved', StatusNote = %s WHERE BugId = %s AND Status = N'open'",
+                    (AUTO_NOTE, i))
+    return ids
 
 
 def flagged(admin, app: dict) -> dict:
@@ -372,7 +402,7 @@ def try_prompt(app: str, component: str, kind: str, plan: dict, stage: str, log_
     if code_lines:
         code = (f"\n\nYou may also change the application's code, at most {code_lines} lines in all, when the build plan "
                 "alone cannot do it. Name in `files` the files you need to read first (at most "
-                f"{MAX_CODE_FILES}, from this list; [] when the plan patch is enough):\n" + "\n".join(files or []))
+                f"{code_files_allowed(code_lines)}, from this list; [] when the plan patch is enough):\n" + "\n".join(files or []))
     return (f"A generated container for {app}/{component} failed at the {stage} stage.\n\nBuild plan:\n"
             f"{json.dumps({k: v for k, v in plan.items() if k not in ('applied', 'reasons')}, indent=1, default=str)[:6000]}\n\n"
             f"{PLAN_HELP.get(kind, PLAN_HELP['dotnet'])}\n{rules}\n\nLog tail:\n{log_tail[-8000:]}\n\n"
@@ -570,7 +600,7 @@ def try_handler(job: dict, ask=None, verify=None) -> dict:
         except Exception:  # noqa: BLE001
             pass
         changed = 0
-        want = [p for p in (answer.get("files") or []) if p in set(listed)][:MAX_CODE_FILES] if code_lines else []
+        want = [p for p in (answer.get("files") or []) if p in set(listed)][:code_files_allowed(code_lines)] if code_lines else []
         if want:
             rf._stop_if_cancelled()
             texts = {}
@@ -663,8 +693,8 @@ def tries(conn, bug_ids=None) -> dict:
 
 
 def _try_form(bug_id: int, csrf: str, parent: int | None = None) -> str:
-    lines = "".join(f"<option value='{n}'>{'No code changes' if not n else f'Code changes: up to {n} lines'}</option>"
-                    for n in (0, 25, 50, MAX_CODE_LINES))
+    lines = "".join(f"<option value='{n}'{' selected' if n == DEFAULT_CODE_LINES else ''}>"
+                    f"{'No code changes' if not n else f'Code changes: up to {n:,} lines'}</option>" for n in CODE_LINE_CHOICES)
     ph = ("What should the LLM try next, on top of this try?" if parent else
           "What should the LLM try? For example: build on the full image and add the package libgdiplus")
     return (f"<form method='post' action='{BASE}/{int(bug_id)}/try' class='formrow'>{csrf}"
@@ -790,8 +820,14 @@ def show(adm, conn, s, a, q: dict | None = None) -> "Response":  # noqa: F821
     label = " ".join(q.get("label", [""])[0].split())[:30]
     cur = conn.cursor(as_dict=True)
     try:
-        cur.execute("SELECT BugId, ApplicationId, ComponentId, App, Component, VerifyStatus, Status, Note, Labels, CreatedBy, "
-                    "CreatedAt, ExportedAt, DATALENGTH(DataGz) AS Bytes FROM cz.BugReport ORDER BY BugId DESC")
+        if auto_resolve(conn):
+            conn.commit()
+    except Exception as ex:  # noqa: BLE001      no sandbox checks or no LLM queue in this database: nothing settles by itself
+        conn.rollback()
+        print(f"bug reports, resolving automatically: {type(ex).__name__}: {ex}", file=sys.stderr)
+    try:
+        cur.execute("SELECT BugId, ApplicationId, ComponentId, App, Component, VerifyStatus, Status, StatusNote, Note, Labels, "
+                    "CreatedBy, CreatedAt, ExportedAt, DATALENGTH(DataGz) AS Bytes FROM cz.BugReport ORDER BY BugId DESC")
         every = cur.fetchall()
         kw = keywords_text(conn)
     except Exception as ex:  # noqa: BLE001      a database from before schema 65
@@ -851,6 +887,7 @@ def show(adm, conn, s, a, q: dict | None = None) -> "Response":  # noqa: F821
                        f"<td class='small'>{e(r.get('Note') or '')}<div>{lab}</div></td>"
                        f"<td class='small'>{e(r.get('CreatedBy') or '')}<br><span class='muted'>{_when(r.get('CreatedAt'))}</span></td>"
                        f"<td>{e(r['Status'])}"
+                       + (f"<br><span class='muted small'>{e(r['StatusNote'])}</span>" if r.get("StatusNote") else "")
                        + (f"<br><span class='muted small'>exported {_when(r['ExportedAt'])}</span>" if r.get("ExportedAt") else "")
                        + f"</td><td class='small nowrap'>{' · '.join(acts)}</td></tr>")
         body.append("<table><thead><tr><th></th><th>Application / component</th><th>Failed</th><th>Note and labels</th>"
@@ -866,8 +903,8 @@ def show(adm, conn, s, a, q: dict | None = None) -> "Response":  # noqa: F821
         body.append("<h2 id='tries'>Let the LLM try</h2><p class='small'>Write what to try for a report. The LLM queue builds "
                     "and runs the component, asks the LLM for a change that follows your words, and builds and runs it again "
                     "with that change. The change is to the build plan (base image, packages, environment, writable "
-                    f"folders, build arguments) and, when you allow it, to the application's code: at most {MAX_CODE_LINES} "
-                    f"lines in {MAX_CODE_FILES} files per try, and at most {MAX_LLM_CALLS} LLM calls. Every try is kept. The "
+                    f"folders, build arguments) and, when you allow it, to the application's code: as many lines as you choose (50 unless "
+                    f"you change it, at most {MAX_CODE_LINES:,}) in up to {MAX_CODE_FILES} files per try, and at most {MAX_LLM_CALLS} LLM calls. Every try is kept. The "
                     "stars say how far the build and run got (★ the build fails, ★★ it builds and the run fails, ★★★★★ it "
                     "builds and runs), and <b>best so far</b> marks the try to go on from; <i>Continue from this try</i> "
                     "starts the next one from any try's changes, not only the latest. A report with tries cannot be "
@@ -997,8 +1034,10 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
         if parts[2] == "remove":
             cur.execute("DELETE FROM cz.BugReport WHERE BugId = %s", (bid,))
         else:
-            cur.execute("UPDATE cz.BugReport SET Status = %s WHERE BugId = %s",
-                        ({"resolve": "resolved", "close": "closed", "reopen": "open"}[parts[2]], bid))
+            # a status a person set is not changed automatically later (auto_resolve)
+            cur.execute("UPDATE cz.BugReport SET Status = %s, StatusNote = %s WHERE BugId = %s",
+                        ({"resolve": "resolved", "close": "closed", "reopen": "open"}[parts[2]],
+                         f"{'reopened' if parts[2] == 'reopen' else 'set'} by {s.user}"[:300], bid))
         conn.commit()
         return say({"resolve": "Marked resolved.", "close": "Closed.", "reopen": "Reopened.", "remove": "Removed."}[parts[2]])
     return nf

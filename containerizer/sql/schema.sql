@@ -3651,6 +3651,7 @@ CREATE TABLE [${schema}].BugReport (
                   CONSTRAINT CK_BugReport_Status CHECK (Status IN (N'open', N'resolved', N'closed')),
     Note          nvarchar(1000) NULL,
     Labels        nvarchar(400)  NULL,              -- comma-separated, as the administrators wrote them
+    StatusNote    nvarchar(300)  NULL,              -- who or what set the status; NULL: nobody yet (auto_resolve may)
     CreatedBy     nvarchar(200)  NULL,
     CreatedAt     datetime2(0)   NOT NULL CONSTRAINT DF_BugReport_CreatedAt DEFAULT SYSUTCDATETIME(),
     ExportedAt    datetime2(0)   NULL,

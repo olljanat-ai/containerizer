@@ -20,11 +20,13 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   per line) are replaced everywhere in the export by random words, the same word for the same keyword within a
   file. **Let the LLM try** takes your words on what to try for a report: the LLM queue (kind `bugtry`) builds
   and runs the component as it is, asks the LLM for a change that follows them (the build plan, and when you allow
-  it the application's code, up to 100 lines in three files; at most three LLM calls a try), builds and runs again
+  it the application's code, up to 50 lines unless you choose another limit from 25 to 1,000; at most three LLM
+  calls a try), builds and runs again
   with it and records the result (*Helped*, *Got further*, *Did not help*, *Worse*, *Already fixed*, *Nothing to
   try*) with a rating of one to five stars for how far the build and run got. Every try is kept with its diagnosis,
   plan change and code diff; **Continue from this try** starts the next one from any try's changes, *best so far*
-  marks where to go on, and a report with tries is closed, never removed. The tries are in the export. **System prompts** on the same page shows what Containerizer tells the LLM
+  marks where to go on, and a report with tries is closed, never removed. A report with a five-star try is
+  marked resolved by itself once the application rates A and the component runs healthy in the sandbox. The tries are in the export. **System prompts** on the same page shows what Containerizer tells the LLM
   about its role for each kind of question (assessment and build diagnosis, refactoring, egress reviews, link
   reviews, platform migrations) and lets an administrator replace the text (`cz.LlmPrompt`); the scan worker and
   the queue runner use it from their next scan or job, and replaced prompts are in the export

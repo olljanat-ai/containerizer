@@ -86,9 +86,11 @@ def test_the_admin_page_and_roles():
     assert adm.conn.sql(r"UPDATE cz.BugReport SET ExportedAt")
     assert _post(adm, a, "/admin/bugs/keywords", Keywords="b\nContoso\ncontoso").status in (302, 303)
     assert adm.conn.sql(r"BugReportSettings")[-1][1] == ("Contoso",)
-    assert _post(adm, a, "/admin/bugs/3/close").status in (302, 303) and adm.conn.sql(r"SET Status = %s")[-1][1] == ("closed", 3)
+    assert _post(adm, a, "/admin/bugs/3/close").status in (302, 303) and adm.conn.sql(r"SET Status = %s")[-1][1] == ("closed", "set by a@example.com", 3)
     assert "resolved" in dict(_post(adm, a, "/admin/bugs/3/resolve").headers)["Location"]
-    assert adm.conn.sql(r"SET Status = %s")[-1][1] == ("resolved", 3)
+    assert adm.conn.sql(r"SET Status = %s")[-1][1] == ("resolved", "set by a@example.com", 3)
+    _post(adm, a, "/admin/bugs/3/reopen")
+    assert adm.conn.sql(r"SET Status = %s")[-1][1] == ("open", "reopened by a@example.com", 3)
     assert _post(adm, a, "/admin/bugs/3/remove").status in (302, 303) and adm.conn.sql(r"DELETE FROM cz.BugReport WHERE BugId")
     op = adm.sessions.create("o@example.com", "O", False, True, True, [])
     assert _get(adm, op, "/admin/bugs").status == 403 and _post(adm, op, "/admin/bugs/flag/5").status == 403
@@ -186,6 +188,25 @@ def test_flagging_and_exporting_in_sql_server():
     with pytest.raises(Exception):
         c.execute("UPDATE cz.BugReport SET Status = N'gone' WHERE BugId = %s", (bug,))
     adm.rollback()
+    # settled by itself: a five-star try, the application rated A, the component healthy in the sandbox
+    conn.cursor().execute("UPDATE cz.LlmJob SET Payload = %s, Result = %s WHERE JobId = %s",
+                          (json.dumps({"bug_id": newer, "hint": "x"}), json.dumps({"outcome": "helped", "score": 5}), jid))
+    conn.commit()
+    assert br.auto_resolve(adm) == []                                            # rated B, nothing in the sandbox
+    conn.cursor().execute("INSERT cz.ApplicationAssessment (ApplicationId, Rating, Score, Confidence, Summary) "
+                          "SELECT ApplicationId, 'A', 95, 0.9, N'x' FROM cz.Application")
+    conn.commit()
+    assert br.auto_resolve(adm) == []                                            # not in the sandbox
+    conn.cursor().execute("INSERT cz.SandboxCheck (ApplicationId, ComponentId, Status, Namespace) SELECT ApplicationId, %s, N'healthy', N'shop' "
+                          "FROM cz.Application", (api,))
+    conn.commit()
+    assert br.auto_resolve(adm) == [newer]
+    adm.commit()
+    c.execute("SELECT Status, StatusNote FROM cz.BugReport WHERE BugId = %s", (newer,))
+    assert tuple(c.fetchone()) == ("resolved", br.AUTO_NOTE)
+    c.execute("UPDATE cz.BugReport SET Status = N'open', StatusNote = N'reopened by john.doe@example.com' WHERE BugId = %s", (newer,))
+    adm.commit()
+    assert br.auto_resolve(adm) == []                                            # a person reopened it: it stays open
     # a replaced system prompt: the administrator writes it, the writer (worker, queue runner) reads it
     assert llmprompts.save(adm, "refactor", "Keep every appender.", "john.doe@example.com") == "saved"
     adm.commit()
@@ -430,10 +451,15 @@ def test_tries_on_the_page_and_in_the_export():
     assert payload["hint"] == "use the full image" and payload["bug_id"] == 3 and payload["project"] == "src/Api/Api.csproj"
     assert payload["source"]["type"] == "org-clone" and payload["commit"] == "a" * 40 and "bugtry" in params
     assert payload["parent"] is None and payload["base"] is None and payload["code_lines"] == 0
-    # continue from try 21, with code changes (never more than 100 lines)
+    # continue from try 21, with code changes (never more than 1,000 lines)
+    assert "<option value='50' selected>Code changes: up to 50 lines</option>" in page
+    assert "<option value='1000'>Code changes: up to 1,000 lines</option>" in page and "<option value='0'>No code changes" in page
+    assert [br.code_files_allowed(n) for n in (25, 100, 200, 1000)] == [3, 3, 6, 6]
     _post(adm, a, "/admin/bugs/3/try", Hint="go on", Parent="21", CodeLines="500")
+    assert json.loads([p for p in adm.conn.sql(r"EXEC cz.QueueLlmJob")[-1][1] if isinstance(p, str) and p.startswith("{")][-1])["code_lines"] == 500
+    _post(adm, a, "/admin/bugs/3/try", Hint="go on", Parent="21", CodeLines="999")
     payload = json.loads([p for p in adm.conn.sql(r"EXEC cz.QueueLlmJob")[-1][1] if isinstance(p, str) and p.startswith("{")][-1])
-    assert payload["parent"] == 21 and payload["code_lines"] == 100 and payload["base"]["status"] == "run-failed"
+    assert payload["parent"] == 21 and payload["code_lines"] == 999 and payload["base"]["status"] == "run-failed"
     assert payload["base"]["plan_patch"] == {"add_packages": ["libgdiplus"]} and "+new Contoso" in payload["base"]["code_patch"]
     assert payload["base"]["log_tail"] == "boom"
     loc = dict(_post(adm, a, "/admin/bugs/3/try", Hint="x", Parent="23").headers)["Location"]
@@ -559,3 +585,20 @@ def test_open_and_closed_views_and_labels_on_the_page():
     n = len(adm.conn.sql(r"SET Labels"))
     r = _post(adm, a, "/admin/bugs/4/labels", Labels="<x>", Back="https://evil.example/")
     assert dict(r.headers)["Location"].startswith("/admin/bugs?msg=") and len(adm.conn.sql(r"SET Labels")) == n
+
+
+def test_settled_reports_are_resolved_when_the_page_opens():
+    pytest.importorskip("jwt")
+    from test_refactor import _get
+    from test_refactor import adm as adm_fixture
+    adm = adm_fixture.__wrapped__()
+    job = lambda i, bug, score: {"JobId": i, "Status": "answered", "Error": None, "Note": None, "QueuedAt": None,  # noqa: E731
+                                 "FinishedAt": None, "RequestedBy": None, "Payload": json.dumps({"bug_id": bug, "hint": "h"}),
+                                 "Result": json.dumps({"outcome": "helped", "score": score})}
+    adm.conn.answers = {r"JOIN cz.vSandboxLatest": [{"BugId": 5}, {"BugId": 6}],        # rated A and healthy, both
+                        r"WHERE Kind = N'bugtry'": [job(1, 5, 5), job(2, 6, 4)]}
+    a = adm.sessions.create("a@example.com", "A", True)
+    assert _get(adm, a, "/admin/bugs").status == 200
+    ups = adm.conn.sql(r"SET Status = N'resolved', StatusNote = %s")
+    assert [p for _, p in ups] == [(br.AUTO_NOTE, 5)]                            # only the one with a five-star try
+    assert "StatusNote IS NULL" in adm.conn.sql(r"JOIN cz.vSandboxLatest")[0][0] and "a.Rating = 'A'" in adm.conn.sql(r"JOIN cz.vSandboxLatest")[0][0]
