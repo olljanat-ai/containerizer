@@ -1,0 +1,2162 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'sha256-/K9p2JtEqCycL2fSbEonMakkteWpAHv57x2wndLqMNo=' 'sha256-DrEMJJ29sL7vIloQzly+VUGMxKcBTMII+OfW7Y8AkG4=' 'sha256-/8wPdzX9q0NNJXyA5lzsLojXFpkeaXVxhbfkUOQaWy8='; style-src 'self' 'sha256-FwvBp6AEMfmC0P6+RX+BqSMqF0U3+GRsY8hNKeyt4Vs='; font-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'none'; object-src 'none'; upgrade-insecure-requests">
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests.">
+      
+      
+      
+        <link rel="canonical" href="https://containerizer.eu/bug-reports/">
+      
+      
+        <link rel="prev" href="../egress/">
+      
+      
+        <link rel="next" href="../inventory/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../images/favicon.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Bug reports - Containerizer</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        
+        <link rel="stylesheet" href="../assets/external/fonts.googleapis.com/css.49ea35f2.css">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/landing.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  <meta property="og:type" content="website"><meta property="og:site_name" content="Containerizer"><meta property="og:title" content="Bug reports - Containerizer"><meta property="og:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."><meta property="og:url" content="https://containerizer.eu/bug-reports/"><meta name="twitter:card" content="summary"><meta name="twitter:title" content="Bug reports - Containerizer"><meta name="twitter:description" content="Can this application run as a Linux container on Kubernetes? Assessment, hardened builds and manifests."></head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#bug-reports" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Containerizer" class="md-header__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis"><a href="../" class="cz-home-link">Containerizer</a></span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Bug reports
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../appliance/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../overview/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  How it works
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../scheduled-scans/" class="md-tabs__link">
+          
+  
+  
+  Using it
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sign-in/" class="md-tabs__link">
+          
+  
+  
+  Administration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../sandbox-https/" class="md-tabs__link">
+          
+  
+  
+  Sandbox
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../java-node/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Containerizer" class="md-nav__button md-logo" aria-label="Containerizer" data-md-component="logo">
+      
+  <img src="../images/favicon.svg" alt="logo">
+
+    </a>
+    Containerizer
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/olljanat-ai/containerizer" title="Go to repository" class="md-source" data-md-component="source" target="_blank" rel="noopener noreferrer">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    olljanat-ai/containerizer
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using it
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using it
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../scheduled-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organization scans
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../developers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developers and ownership
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform migrations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../platform-fixes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Platform fixes for refactor findings
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../refactoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Refactoring patches
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    A+: OpenTelemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../egress/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Egress and network connectivity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bug reports
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bug reports
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#flag-a-failed-build-or-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flag a failed build or run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bug-reports_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bug reports
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#working-through-b-rated-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working through B-rated applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#let-the-llm-try" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Let the LLM try
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Let the LLM try">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-the-llm-may-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the LLM may change
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#every-try-is-kept-and-any-of-them-can-be-continued" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Every try is kept, and any of them can be continued
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-rating" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The rating
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-prompts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System prompts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#anonymization-keywords" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Anonymization keywords
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-export" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The export
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../inventory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inventory: binaries, databases, services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../gateway-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateway API routes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../clusters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Clusters: sandbox, development, acceptance, production
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../build-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build pipelines
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rule-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rule review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Administration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Administration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sign-in/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sign-in and roles
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../source-control/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Source control tokens and the LLM
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../appliance-admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running the appliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Sandbox
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-https/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox HTTPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lab-services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Lab services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sandbox-idp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sandbox identity provider
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dev-databases/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dev databases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../external-secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secrets (External Secrets)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../openbao/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secret values in OpenBao
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../java-node/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Java and Node.js
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../python-go/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python and Go
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../local-dev-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local dev server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#flag-a-failed-build-or-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flag a failed build or run
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bug-reports_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bug reports
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#working-through-b-rated-applications" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working through B-rated applications
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#let-the-llm-try" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Let the LLM try
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Let the LLM try">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-the-llm-may-change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the LLM may change
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#every-try-is-kept-and-any-of-them-can-be-continued" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Every try is kept, and any of them can be continued
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-rating" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The rating
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-prompts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System prompts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#anonymization-keywords" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Anonymization keywords
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-export" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The export
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="bug-reports">Bug reports<a class="headerlink" href="#bug-reports" title="Permanent link">&para;</a></h1>
+<p>Sometimes a build or a run fails in the scan's verification because of Containerizer itself, not because of the
+application: a generated Dockerfile that cannot work, a setting the tool misread, a <code>docker</code> command it put
+together wrongly. Administrators can <strong>flag</strong> such a case where they see it and later <strong>export</strong> every flagged
+case as one JSON file for whoever maintains Containerizer, with the names you choose replaced.</p>
+<p>Nothing is sent anywhere: the export is a file you download and pass on yourself.</p>
+<h2 id="flag-a-failed-build-or-run">Flag a failed build or run<a class="headerlink" href="#flag-a-failed-build-or-run" title="Permanent link">&para;</a></h2>
+<p>On an application's page, a component whose build or run failed has <strong>Flag as a Containerizer bug</strong> at the end of
+its <em>Build and run</em> block, with room for a short note on why it looks like the tool's fault.</p>
+<p><img alt="The Build and run block of a failed component, with the note field and Flag as a Containerizer bug" class="cz-shot" src="../images/results-bug-flag.png#only-light" />
+<img alt="The Build and run block of a failed component, with the note field and Flag as a Containerizer bug" class="cz-shot" src="../images/results-bug-flag-dark.png#only-dark" /></p>
+<p>The case is copied at that moment, because the next scan of the application replaces the component's logs:</p>
+<ul>
+<li>the component's facts (name, project path, role, target framework, verdict) and the application's rating and
+  commit;</li>
+<li>the verification result and its excerpt;</li>
+<li>every attempt's Dockerfile, <code>docker build</code> command and log (up to 300,000 characters each: its start and its end);</li>
+<li>the component's findings (rule, severity, title, evidence).</li>
+</ul>
+<p>The application's source code is not copied. Secrets are masked in the logs when the scan stores them. A component
+has one open report: flagging it again replaces the copy, and <strong>Remove the flag</strong> deletes it (a report that has
+tries is closed and kept instead, see below).</p>
+<h2 id="bug-reports_1">Bug reports<a class="headerlink" href="#bug-reports_1" title="Permanent link">&para;</a></h2>
+<p><strong>Admin → Bug reports</strong> lists the flagged cases with their notes.</p>
+<ul>
+<li><strong>Views.</strong> The page opens on the <strong>Open</strong> reports. <strong>Resolved and closed</strong> shows the ones that are dealt with,
+  and <strong>All</strong> shows everything; each view says how many it has.</li>
+<li><strong>Resolved</strong> marks a report as fixed, <strong>Close</strong> puts one aside that will not be fixed or was not a bug after
+  all, and <strong>Reopen</strong> brings either back. Both leave the Open view, and neither removes anything: a resolved or
+  closed report keeps its case and its tries.</li>
+<li><strong>Resolved automatically.</strong> An open report is marked resolved by itself, the next time this page is opened, when
+  all three hold: one of its tries got five stars, the application's latest scan rates it <strong>A</strong>, and the latest
+  sandbox check found the component deployed and healthy. The status then says <em>automatically: ...</em>. A report a
+  person has set a status on, a reopened one included, is left alone.</li>
+<li><strong>Labels.</strong> Give a report labels (comma-separated, such as <code>nuget, windows path</code>) to keep similar cases
+  together. The labels of the view are listed above the table with their counts; click one to see only its
+  reports, in any view. Labels are free text, up to eight a report.</li>
+<li><strong>JSON</strong> exports one report alone, and <strong>Remove</strong> deletes a report that has no tries.</li>
+</ul>
+<p><img alt="Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords" class="cz-shot" src="../images/admin-bug-reports.png#only-light" />
+<img alt="Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords" class="cz-shot" src="../images/admin-bug-reports-dark.png#only-dark" /></p>
+<h2 id="working-through-b-rated-applications">Working through B-rated applications<a class="headerlink" href="#working-through-b-rated-applications" title="Permanent link">&para;</a></h2>
+<p>A rating of <strong>B</strong> means <em>targeted code changes</em>: the application should become <strong>A</strong>, or there should be a
+recorded reason why it cannot. The aim is that no application stays B without a decision. Nothing here happens
+by itself: it is the order in which an administrator works through them.</p>
+<ol>
+<li><strong>Make it A</strong> (<a href="../refactoring/#make-it-a">Refactoring patches</a>). Most B applications end here.</li>
+<li><strong>Try again with your own words.</strong> When the patch does not verify, flag the failed component and use
+   <em>Let the LLM try</em> below with what you think is wrong, allowing code changes when the build plan is not enough.
+   Go on from the best try, not necessarily the latest.</li>
+<li><strong>Flag what looks like the tool's fault</strong> and export it, so Containerizer gets fixed. After the fix, scan the
+   application again.</li>
+<li><strong>When none of that makes it A, decide which case it is</strong>, label the report with it, and act:</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>What to do</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Containerizer is still wrong</td>
+<td>Keep the report open for the maintainers (label it, for example <code>tool</code>)</td>
+</tr>
+<tr>
+<td>The tries showed a real obstacle in the code: a Windows-only API or library, a component that cannot move</td>
+<td>Propose a rule for it (<a href="../overview/#self-learning-loop">Self-learning loop</a>). Once a person approves it, the application is rated by that rule: <strong>C</strong> when part of it must stay on Windows and the rest can move, <strong>D</strong> when it needs a port. Then mark the report resolved</td>
+</tr>
+<tr>
+<td>It only needs work no LLM managed</td>
+<td>Hand the best try's patch (<strong>Download .patch</strong>) to a developer, label the report (for example <code>developer</code>), and close it</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Do not change a rating because attempts failed.</strong> A rating says what the code needs, not how well the LLM or
+  the tool did; it changes only through a rule a person approved. An application that cannot be made A leaves B
+  by getting the rule that says why.</li>
+<li><strong>Persistent storage is not a reason for B.</strong> A component that keeps its own data rates A when it otherwise runs
+  with configuration only: it is shown as <em>Stateful</em> and deployed with a persistent volume and one replica
+  (<a href="../overview/#application-data-on-persistent-volumes">Application data on persistent volumes</a>). An application
+  that is B only because of its data is a case to flag.</li>
+</ul>
+<h2 id="let-the-llm-try">Let the LLM try<a class="headerlink" href="#let-the-llm-try" title="Permanent link">&para;</a></h2>
+<p>Often you already have an idea of what would fix the case. Write it under the report in <strong>Let the LLM try</strong>, in your
+own words (<em>build on the full image and add libgdiplus</em>), choose whether the LLM may change code, and Containerizer
+tests the idea for you:</p>
+<p><img alt="Let the LLM try: tries with their ratings, the LLM's changes, and Continue from this try" class="cz-shot" src="../images/admin-bug-tries.png#only-light" />
+<img alt="Let the LLM try: tries with their ratings, the LLM's changes, and Continue from this try" class="cz-shot" src="../images/admin-bug-tries-dark.png#only-dark" /></p>
+<ol>
+<li>The LLM queue (a job of the kind <em>Bug report try</em>; it needs no approval unless you tick that kind in the
+   queue's settings, since an administrator asked for it) takes the
+   application's source at the flagged commit from the scan worker's clone.</li>
+<li>It builds and runs the component as it is, with the version installed now. If that works, the result is
+   <strong>Already fixed</strong> and the LLM is not asked.</li>
+<li>It asks the LLM for a change that follows your words (below).</li>
+<li>It builds and runs the component again with that change, and compares.</li>
+</ol>
+<h3 id="what-the-llm-may-change">What the LLM may change<a class="headerlink" href="#what-the-llm-may-change" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>The build plan</strong>, always: the base image, OS packages, environment variables, writable folders, build
+  arguments, files removed in the build, the runtime line.</li>
+<li><strong>The application's code</strong>, up to the number of lines you choose: 25, <strong>50 (the default)</strong>, 100, 200, 500 or
+  1,000, or <em>No code changes</em>. The LLM first names the files it needs to read (from the application's file list:
+  up to three, or six when it may change more than 100 lines), then gives edits of those files; together they may
+  change at most the lines you allowed. A larger allowance means a longer answer from the LLM, and with a slow
+  self-hosted LLM a longer wait. Edits that change more, that do not match the file, or that remove
+  what the application does are refused; the LLM gets one more chance, then the try goes on without a code change.</li>
+</ul>
+<p>A try makes at most three LLM calls and two builds, so it cannot run for long. The scan's own Dockerfile text is
+not edited directly: it follows from the plan.</p>
+<h3 id="every-try-is-kept-and-any-of-them-can-be-continued">Every try is kept, and any of them can be continued<a class="headerlink" href="#every-try-is-kept-and-any-of-them-can-be-continued" title="Permanent link">&para;</a></h3>
+<p>Nothing of a try is thrown away: your words, the LLM's diagnosis, its plan change, the code change as a diff (with
+<strong>Download .patch</strong>) and the result stay with the report, and all of it goes into the export. A report that has
+tries cannot be removed, only closed; flagging the component again after a new scan closes the old report and
+keeps it.</p>
+<p><strong>Continue from this try</strong> under any finished try starts the next one from that try's changes (its plan change and
+its code change), not from the flagged commit and not necessarily from the latest try: when the third idea made it
+worse, go on from the second. The page shows each try under the one it continues. A continued try takes its
+parent's result as its starting point, so it builds once.</p>
+<h3 id="the-rating">The rating<a class="headerlink" href="#the-rating" title="Permanent link">&para;</a></h3>
+<p>Each try has a result, compared with where it started, and stars for how far the build and run got:</p>
+<table>
+<thead>
+<tr>
+<th>Stars</th>
+<th>The build and run with the change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>★☆☆☆☆</td>
+<td>the build fails</td>
+</tr>
+<tr>
+<td>★★☆☆☆</td>
+<td>it builds, the run fails</td>
+</tr>
+<tr>
+<td>★★★☆☆</td>
+<td>it builds and runs into a known finding</td>
+</tr>
+<tr>
+<td>★★★★☆</td>
+<td>it runs, and stops only at missing external services</td>
+</tr>
+<tr>
+<td>★★★★★</td>
+<td>it builds and runs</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Result</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Helped</strong></td>
+<td>It builds and runs with the change</td>
+</tr>
+<tr>
+<td><strong>Got further</strong></td>
+<td>It still fails, but later than before (more stars)</td>
+</tr>
+<tr>
+<td><strong>Did not help</strong></td>
+<td>It fails as before</td>
+</tr>
+<tr>
+<td><strong>Worse</strong></td>
+<td>It gets less far than before</td>
+</tr>
+<tr>
+<td><strong>Already fixed</strong></td>
+<td>It builds and runs with this version without any change</td>
+</tr>
+<tr>
+<td><strong>Nothing to try</strong></td>
+<td>The LLM found no change that does what you wrote (its reasoning is shown)</td>
+</tr>
+<tr>
+<td><strong>Not tried</strong></td>
+<td>The source at the flagged commit is gone, the component is no longer built in Linux, Docker is away, or the parent's code change no longer applies</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Best so far</strong> marks the try to go on from: the most stars, then the smallest change, then the earliest.</p>
+<p>A try changes nothing for the application itself: its next scan builds it as before, and the repository is never
+written to. What a try found is feedback for whoever fixes Containerizer, and a patch you can apply yourself.</p>
+<p>The try needs an LLM (Admin → Source control &amp; LLM) and an organization scan on this machine that still has the
+commit; scan and flag the application again when it has moved on.</p>
+<h2 id="system-prompts">System prompts<a class="headerlink" href="#system-prompts" title="Permanent link">&para;</a></h2>
+<p>A system prompt is what Containerizer tells the LLM about its role. A try asks the LLM two kinds of question, each
+under its own system prompt, and <strong>System prompts of this try</strong> in the try's form shows both, ready to edit:</p>
+<table>
+<thead>
+<tr>
+<th>Prompt</th>
+<th>Used in the try for</th>
+<th>The same built-in text is used elsewhere for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The plan change</td>
+<td>What fails, and which build-plan change follows your words</td>
+<td>Component reviews where the rules are unsure, and the diagnosis of a failed build or run</td>
+</tr>
+<tr>
+<td>The code change</td>
+<td>The edits of the files the LLM read</td>
+<td>Every code change of a refactoring order</td>
+</tr>
+</tbody>
+</table>
+<p><img alt="System prompts of this try, in the form of a try: the two texts, ready to edit" class="cz-shot" src="../images/admin-system-prompts.png#only-light" />
+<img alt="System prompts of this try, in the form of a try: the two texts, ready to edit" class="cz-shot" src="../images/admin-system-prompts-dark.png#only-dark" /></p>
+<ul>
+<li><strong>A changed text is used for that try alone.</strong> Scans, refactoring orders and other tries keep the built-in texts;
+  nothing on the appliance changes. A text you leave as it is stays the built-in one.</li>
+<li><strong>Continue from this try</strong> carries a try's replaced prompts into the next form, so a wording that worked stays
+  until you change it back.</li>
+<li>The question itself (the evidence, the files, your words) and the form of the answer are not part of a system
+  prompt: an answer must still be the JSON its question asks for, so keep that instruction when you rewrite one.</li>
+<li>A try shows which prompts it replaced, and the export carries them with the try, next to its result and its
+  rating, together with the built-in texts of that version (<code>builtin_system_prompts</code>). That is how better wordings
+  are found: the maintainers compare what a replaced prompt achieved across reports, and a wording that clearly
+  works better becomes the built-in text of a later version of Containerizer.</li>
+</ul>
+<p>Version 0.54.7 let an administrator replace system prompts for the whole appliance. That is gone: a prompt
+replaced there is no longer used after the update, and the built-in texts apply again.</p>
+<h2 id="anonymization-keywords">Anonymization keywords<a class="headerlink" href="#anonymization-keywords" title="Permanent link">&para;</a></h2>
+<p>Give the words the export must not carry, one per line: company, product, project, host and people's names.</p>
+<ul>
+<li>Each keyword is replaced everywhere in the export (logs, paths, Dockerfiles, application and component names,
+  your notes) by a random word such as <code>maple-3f9a</code>.</li>
+<li>The same keyword gets the same word within one file, whatever its case, so the case stays readable: a feed
+  host is still the same host in every line.</li>
+<li>Every export draws new words, and the mapping is neither in the file nor kept.</li>
+<li>Longer keywords are replaced first, so <code>build01.contoso.local</code> goes as a whole before <code>contoso</code>.</li>
+<li>Application and component names are replaced only when they are listed.</li>
+</ul>
+<p>Open the file before you send it: a name that is not listed stays.</p>
+<h2 id="the-export">The export<a class="headerlink" href="#the-export" title="Permanent link">&para;</a></h2>
+<p><strong>Export JSON</strong> downloads the reports shown (the view and the label you are looking at; the open ones by default)
+as <code>containerizer-bug-reports-&lt;date&gt;.json</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w"> </span><span class="nt">"format"</span><span class="p">:</span><span class="w"> </span><span class="s2">"containerizer-bug-reports/1"</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">"containerizer"</span><span class="p">:</span><span class="w"> </span><span class="s2">"0.54.7"</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">"exported_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-11-27T12:10:00Z"</span><span class="p">,</span>
+<span class="w"> </span><span class="nt">"anonymized"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"keywords"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"replacements"</span><span class="p">:</span><span class="w"> </span><span class="mi">41</span><span class="p">,</span><span class="w"> </span><span class="nt">"how"</span><span class="p">:</span><span class="w"> </span><span class="s2">"each keyword is replaced by one random word, the same within this file"</span><span class="p">},</span>
+<span class="w"> </span><span class="nt">"builtin_system_prompts"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"plan"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">},</span>
+<span class="w"> </span><span class="nt">"reports"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">  </span><span class="p">{</span>
+<span class="w">   </span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"open"</span><span class="p">,</span><span class="w"> </span><span class="nt">"flagged_at"</span><span class="p">:</span><span class="w"> </span><span class="s2">"2026-11-27T12:04:00"</span><span class="p">,</span><span class="w"> </span><span class="nt">"labels"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"nuget"</span><span class="p">,</span><span class="w"> </span><span class="s2">"windows path"</span><span class="p">],</span>
+<span class="w">   </span><span class="nt">"note"</span><span class="p">:</span><span class="w"> </span><span class="s2">"restore asks a Windows folder"</span><span class="p">,</span>
+<span class="w">   </span><span class="nt">"application"</span><span class="p">:</span><span class="w"> </span><span class="s2">"maple-3f9a"</span><span class="p">,</span><span class="w"> </span><span class="nt">"rating"</span><span class="p">:</span><span class="w"> </span><span class="s2">"B"</span><span class="p">,</span><span class="w"> </span><span class="nt">"commit"</span><span class="p">:</span><span class="w"> </span><span class="s2">"abcdef0123456789..."</span><span class="p">,</span>
+<span class="w">   </span><span class="nt">"component"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"maple-3f9a.Api"</span><span class="p">,</span><span class="w"> </span><span class="nt">"project"</span><span class="p">:</span><span class="w"> </span><span class="s2">"src/maple-3f9a.Api/maple-3f9a.Api.csproj"</span><span class="p">,</span><span class="w"> </span><span class="nt">"role"</span><span class="p">:</span><span class="w"> </span><span class="s2">"web"</span><span class="p">},</span>
+<span class="w">   </span><span class="nt">"verification"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"build-failed"</span><span class="p">,</span><span class="w"> </span><span class="nt">"detail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">},</span>
+<span class="w">   </span><span class="nt">"attempts"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"attempt"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="nt">"stage"</span><span class="p">:</span><span class="w"> </span><span class="s2">"build"</span><span class="p">,</span><span class="w"> </span><span class="nt">"dockerfile_and_command"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"log"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">}],</span>
+<span class="w">   </span><span class="nt">"findings"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"rule"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cert-store"</span><span class="p">,</span><span class="w"> </span><span class="nt">"severity"</span><span class="p">:</span><span class="w"> </span><span class="s2">"config"</span><span class="p">,</span><span class="w"> </span><span class="nt">"title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"evidence"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">}],</span>
+<span class="w">   </span><span class="nt">"tries"</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">412</span><span class="p">,</span><span class="w"> </span><span class="nt">"continues"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="nt">"hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"build on the full image and add libgdiplus"</span><span class="p">,</span><span class="w"> </span><span class="nt">"state"</span><span class="p">:</span><span class="w"> </span><span class="s2">"done"</span><span class="p">,</span>
+<span class="w">              </span><span class="nt">"outcome"</span><span class="p">:</span><span class="w"> </span><span class="s2">"further"</span><span class="p">,</span><span class="w"> </span><span class="nt">"score"</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">"code_lines_allowed"</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+<span class="w">              </span><span class="nt">"before"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"build-failed"</span><span class="p">,</span><span class="w"> </span><span class="nt">"steps"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"log_tail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">},</span>
+<span class="w">              </span><span class="nt">"llm"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"diagnosis"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"plan_patch"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"base"</span><span class="p">:</span><span class="w"> </span><span class="s2">"full"</span><span class="p">,</span><span class="w"> </span><span class="nt">"add_packages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"libgdiplus"</span><span class="p">]}},</span>
+<span class="w">              </span><span class="nt">"after"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"status"</span><span class="p">:</span><span class="w"> </span><span class="s2">"run-failed"</span><span class="p">,</span><span class="w"> </span><span class="nt">"steps"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">,</span><span class="w"> </span><span class="nt">"log_tail"</span><span class="p">:</span><span class="w"> </span><span class="s2">"..."</span><span class="p">},</span>
+<span class="w">              </span><span class="nt">"plan_patch_total"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"base"</span><span class="p">:</span><span class="w"> </span><span class="s2">"full"</span><span class="p">,</span><span class="w"> </span><span class="nt">"add_packages"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">"libgdiplus"</span><span class="p">]},</span><span class="w"> </span><span class="nt">"code_patch"</span><span class="p">:</span><span class="w"> </span><span class="s2">""</span><span class="p">},</span>
+<span class="w">             </span><span class="p">{</span><span class="nt">"id"</span><span class="p">:</span><span class="w"> </span><span class="mi">418</span><span class="p">,</span><span class="w"> </span><span class="nt">"continues"</span><span class="p">:</span><span class="w"> </span><span class="mi">412</span><span class="p">,</span><span class="w"> </span><span class="nt">"hint"</span><span class="p">:</span><span class="w"> </span><span class="s2">"log to the console instead of d:\\logs"</span><span class="p">,</span><span class="w"> </span><span class="nt">"state"</span><span class="p">:</span><span class="w"> </span><span class="s2">"done"</span><span class="p">,</span>
+<span class="w">              </span><span class="nt">"outcome"</span><span class="p">:</span><span class="w"> </span><span class="s2">"helped"</span><span class="p">,</span><span class="w"> </span><span class="nt">"score"</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">"best"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">"code_lines_allowed"</span><span class="p">:</span><span class="w"> </span><span class="mi">50</span><span class="p">,</span><span class="w"> </span><span class="nt">"code_lines_changed"</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">              </span><span class="nt">"system_prompts"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">"code"</span><span class="p">:</span><span class="w"> </span><span class="s2">"... Never remove a logging appender ..."</span><span class="p">},</span>
+<span class="w">              </span><span class="nt">"code_patch"</span><span class="p">:</span><span class="w"> </span><span class="s2">"diff --git ..."</span><span class="p">}]</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="w"> </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Reports are kept in the database (<code>cz.BugReport</code>, schema 65) until an administrator removes them; only
+administrators can flag, read and export them.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../egress/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Egress and network connectivity">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Egress and network connectivity
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../inventory/" class="md-footer__link md-footer__link--next" aria-label="Next: Inventory: binaries, databases, services">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Inventory: binaries, databases, services
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.top", "navigation.footer", "search.highlight", "content.code.copy", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
