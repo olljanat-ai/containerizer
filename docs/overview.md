@@ -374,7 +374,8 @@ log or the end of the run log. Administrators and operators also get **Whole log
 every attempt of that scan (`build, attempt 1`, `run, attempt 2`), secrets masked, to download. **Dockerfile and
 build command** above it opens what each attempt built, and the `docker build` command it ran, in a new tab (a
 retry can build another Dockerfile, when a failure rule changed the plan); the whole build log starts with the same.
-Scans from 0.54.3 on keep them.
+Scans from 0.54.3 on keep them. When a failure looks like a fault of Containerizer itself, an administrator can
+**Flag as a Containerizer bug** there, and have the LLM try a fix ([Bug reports](bug-reports.md)).
 
 ![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed.png#only-light){ .cz-shot }
 ![A component whose build failed: the page says the rating is not confirmed and shows the end of the build log](images/results-verify-failed-dark.png#only-dark){ .cz-shot }
