@@ -23,8 +23,16 @@ MAPPED = """<?xml version="1.0" encoding="utf-8"?>
 
 
 def test_parse_names_and_urls():
-    got = nugetsources.parse(f"internal, Contoso = {MAIN}\n# a comment\n\nlegacy", FEED)
-    assert got == [("internal", MAIN), ("Contoso", MAIN), ("legacy", FEED)]
+    got = nugetsources.parse(f"internal, Contoso = {MAIN}\n# a comment\n", FEED)
+    assert got == [("internal", MAIN), ("Contoso", MAIN)]
+    # names alone: the feed's URL, where that is a source itself
+    own = "https://nuget.example.com/v3/index.json"
+    assert nugetsources.parse("legacy", own) == [("legacy", own)]
+    assert nugetsources.parse("legacy", MAIN) == [("legacy", MAIN)]
+    # not Azure Artifacts' organization URL: restore would ask it as a v2 feed (401)
+    for org in (FEED, "https://contoso.pkgs.visualstudio.com/"):
+        with pytest.raises(ValueError, match="needs its source URL"):
+            nugetsources.parse("legacy", org)
     assert nugetsources.parse("", FEED) == []
     # Azure Artifacts: the organization's other host is the same feed
     old = "https://contoso.pkgs.visualstudio.com/_packaging/main/nuget/v3/index.json"
@@ -38,9 +46,9 @@ def test_parse_names_and_urls():
     ("x = https://other.example.com/index.json", "not under the feed's URL"),
     ("x = http://pkgs.dev.azure.com/contoso/a", "not a plain https://"),
     (f"x = {FEED}a?b=1", "not a plain https://"),
-    ("a, A", "given twice"),
-    ("bad<name>", "not a source name"),
-    (", x", "not a source name"),
+    (f"a, A = {MAIN}", "given twice"),
+    (f"bad<name> = {MAIN}", "not a source name"),
+    (f", x = {MAIN}", "not a source name"),
 ])
 def test_parse_refuses(text, why):
     with pytest.raises(ValueError, match=why):
