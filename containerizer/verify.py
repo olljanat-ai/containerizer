@@ -30,7 +30,7 @@ from pathlib import Path
 import yaml
 
 from .assess import AppAssessment, Component
-from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, hides_app, writable_dirs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
+from .generate import (CONTAINER_PORT, DOCKERIGNORE, add_reason, _writable_abs, hides_app, windows_name, writable_dirs, buildable, dockerfile_dotnet, dockerfile_for, dockerfile_spa,
                        images, k8s_name, app_ns, make_plan, merge_plan)
 from .rules import RULES_DIR, load_rules
 from . import progress
@@ -639,7 +639,11 @@ def verify_component(a: AppAssessment, c: Component, rules, learn: bool = False,
                 add_reason(plan, fr["id"], _fmt(fr.get("diagnosis", ""), caps), fr.get("refs"))
             if json.dumps(plan, sort_keys=True) == before:
                 inside = [w for w in patch.get("add_writable") or [] if hides_app(w)]
-                entry["note"] = (f"the app writes into its own folder ({', '.join(inside)}): a writable mount there "
+                win = [w for w in patch.get("add_writable") or [] if windows_name(w)]
+                entry["note"] = (f"the app writes to a Windows path ({', '.join(win)}), which on Linux is a name "
+                                 "under its own folder and cannot be mounted; point the setting or code that names "
+                                 "it at a Linux folder (/tmp or a volume)" if win else
+                                 f"the app writes into its own folder ({', '.join(inside)}): a writable mount there "
                                  "would hide the app itself; it must write elsewhere (a setting, /tmp or a volume)"
                                  if inside else "fix already applied; giving up")
                 result["status"] = f"{stage}-failed"

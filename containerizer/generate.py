@@ -421,8 +421,8 @@ def merge_plan(plan: dict, patch: dict) -> dict:
         if k in ("add_packages", "add_writable", "publish_args", "remove_files", "args", "x509_stores"):
             plan.setdefault(k, [])
             for x in v:
-                if k == "add_writable" and hides_app(x):
-                    continue                    # a mount there hides the app itself
+                if k == "add_writable" and (hides_app(x) or windows_name(x)):
+                    continue                    # a mount there hides the app itself, or cannot be made
                 if x not in plan[k]:
                     plan[k].append(x)
         elif k == "env":
@@ -728,6 +728,13 @@ def hides_app(w: str) -> bool:
     return a == "/" or APP_DIR == a or APP_DIR.startswith(a.rstrip("/") + "/")
 
 
+def windows_name(w: str) -> bool:
+    """A writable folder that is a Windows path the app uses unchanged on Linux (d:\\logs\\app, there a name under
+    the working folder: /app/d:\\logs\\app). Neither docker run -v nor a Kubernetes mountPath takes a colon, so
+    it cannot be mounted: the path must be re-pointed (a setting)."""
+    return ":" in w or "\\" in w
+
+
 # where ASP.NET Core keeps its Data Protection key ring in the container (rules/40-plan.yaml plan-dataprotection-keys,
 # only when the code does not persist the keys itself), and the Secret that holds the key mounted there
 DATAPROTECTION_DIR = "/home/app/.aspnet/DataProtection-Keys"
@@ -738,7 +745,7 @@ X509_STORE_DIR = "/home/app/.dotnet/corefx/cryptography/x509stores"
 
 def writable_dirs(plan: dict) -> list[str]:
     """The plan's writable folders, absolute, without those that would hide the app folder."""
-    return sorted({_writable_abs(w) for w in plan["add_writable"] if not hides_app(w)})
+    return sorted({_writable_abs(w) for w in plan["add_writable"] if not hides_app(w) and not windows_name(w)})
 
 
 def legacy_runtime(tfm: str | None) -> str | None:

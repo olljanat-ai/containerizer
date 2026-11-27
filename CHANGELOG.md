@@ -8,6 +8,14 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.6 (2026-11-27)
+
+- **Fixed: a Windows path as a writable folder stopped the test run with `docker: invalid spec ... too many
+  colons`.** An application that writes to a Windows path (`d:\logs\app`) uses it on Linux as a name under its
+  own folder (`/app/d:\logs\app`); a failure rule or the LLM made that a writable folder, which neither
+  `docker run -v` nor a Kubernetes `mountPath` takes. Such a folder is no longer mounted, and the build's note says
+  that the setting or code naming the path must point at a Linux folder.
+
 ## 0.54.5 (2026-11-27)
 
 - **Fixed: a NuGet source name without its URL on an Azure Artifacts feed gave builds a source that answers 401.**
