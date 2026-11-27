@@ -44,7 +44,8 @@ tests the idea for you:
 ![Let the LLM try: tries with their ratings, the LLM's changes, and Continue from this try](images/admin-bug-tries.png#only-light){ .cz-shot }
 ![Let the LLM try: tries with their ratings, the LLM's changes, and Continue from this try](images/admin-bug-tries-dark.png#only-dark){ .cz-shot }
 
-1. The LLM queue (a job of the kind *Bug report try*; approval and order as for the other kinds) takes the
+1. The LLM queue (a job of the kind *Bug report try*; it needs no approval unless you tick that kind in the
+   queue's settings, since an administrator asked for it) takes the
    application's source at the flagged commit from the scan worker's clone.
 2. It builds and runs the component as it is, with the version installed now. If that works, the result is
    **Already fixed** and the LLM is not asked.
