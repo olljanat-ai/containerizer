@@ -1170,6 +1170,16 @@ def test_a_writable_folder_never_hides_the_app():
     assert writable_dirs(plan) == ["/tmp", "/var/lib/x"]
 
 
+def test_a_windows_path_is_no_writable_folder():
+    # on Linux d:\\logs\\app is a name under /app; docker run -v and a Kubernetes mountPath take no colon
+    from containerizer.generate import merge_plan, windows_name, writable_dirs
+    assert windows_name("/app/d:\\logs\\app") and windows_name("d:\\logs") and not windows_name("/app/logs")
+    plan = {"add_writable": ["/tmp", "d:\\logs\\app"], "add_packages": [], "env": {}}
+    merge_plan(plan, {"add_writable": ["/app/d:\\logs\\app", "/var/lib/x"]})
+    assert plan["add_writable"] == ["/tmp", "d:\\logs\\app", "/var/lib/x"]
+    assert writable_dirs(plan) == ["/tmp", "/var/lib/x"]
+
+
 def test_an_edit_that_removes_what_the_app_does_or_adds_a_credential_is_refused():
     h = rf.harmful_edit
     gone = h("PhotoStore.cs", "        var folder = Path.Combine(root, n);\n        Directory.CreateDirectory(folder);\n",
