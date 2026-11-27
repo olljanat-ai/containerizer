@@ -421,7 +421,7 @@ sides next to each other. It is kept with the order, so it still works after the
 
 A build that failed because of Containerizer itself can be **flagged** where you see it. Write what you think
 would fix it and the LLM tries it: the component is built and run with and without the change, and the report
-says whether it helped. Export the reports as JSON for the maintainers, with the names you choose replaced
+says whether it helped. The system prompts the LLM works under are shown there too, and you can replace them. Export the reports as JSON for the maintainers, with the names you choose replaced
 by random words.
 
 [Bug reports :octicons-arrow-right-24:](bug-reports.md)

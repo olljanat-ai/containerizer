@@ -1639,6 +1639,8 @@ class Runner:
         (ai.configured is process-wide)."""
         from .ai import configured
         if self._ctx is None:
+            from . import llmprompts
+            llmprompts.apply(conn)          # the system prompts an administrator replaced (Admin → Bug reports)
             self._ctx = configured(self.llm_settings(conn))
             self._ctx.__enter__()
 

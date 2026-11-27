@@ -19,7 +19,11 @@ it as an app update, without an OS upgrade. OS changes go into a minor or major 
   file. **Let the LLM try** takes your words on what to try for a report: the LLM queue (kind `bugtry`) builds
   and runs the component as it is, asks the LLM for a build-plan change that follows them, builds and runs again
   with it and records whether it helped (*Helped*, *Got further*, *Did not help*, *Already fixed*, *Nothing to
-  try*); the tries are in the export ([docs/bug-reports.md](docs/bug-reports.md)).
+  try*); the tries are in the export. **System prompts** on the same page shows what Containerizer tells the LLM
+  about its role for each kind of question (assessment and build diagnosis, refactoring, egress reviews, link
+  reviews, platform migrations) and lets an administrator replace the text (`cz.LlmPrompt`); the scan worker and
+  the queue runner use it from their next scan or job, and replaced prompts are in the export
+  ([docs/bug-reports.md](docs/bug-reports.md)).
 - **New: browse the code of a refactoring order.** **Browse the code** on the order's page shows the application's
   files at the assessed commit and with the patch, like a repository browser: a folder tree with the files the
   patch adds, changes and removes marked, any file with its changed lines highlighted, both sides next to each

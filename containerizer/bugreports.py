@@ -17,6 +17,9 @@ Containerizer.
   follows the hint, builds and runs again with it, and records whether that helped. The tries are part of the
   export: what was suggested, what the LLM changed, and the result, for whoever fixes the tool.
 
+- **System prompts** (the same page; llmprompts.py): what Containerizer tells the LLM about its role, per kind of
+  question, shown and replaceable; the replaced ones are in the export.
+
 Source file contents are not in a report: logs, the Dockerfile and finding evidence can still name things, which is
 what the keywords are for.
 """
@@ -458,11 +461,13 @@ def export(conn, ids: list[int] | None = None, rand=None, now: datetime | None =
     keywords = parse_keywords(keywords_text(conn))
     replace, counts = anonymizer(keywords, rand)
     bugs = anonymize(bugs, replace)
+    from . import llmprompts
+    replaced = anonymize({name: o["text"] for name, o in llmprompts.load(conn).items()}, replace)
     return {"format": "containerizer-bug-reports/1", "containerizer": __version__,
             "exported_at": (now or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "anonymized": {"keywords": len(keywords), "replacements": counts["n"],
                            "how": "each keyword is replaced by one random word, the same within this file"},
-            "reports": bugs}
+            "replaced_system_prompts": replaced, "reports": bugs}
 
 
 # --------------------------------------------------------------------------- the pages
@@ -536,6 +541,8 @@ def show(adm, conn, s, a, flash: str = "") -> "Response":  # noqa: F821
                 f"<form method='post' action='{BASE}/keywords'>{csrf}<textarea name='Keywords' rows='8' maxlength='20000' "
                 f"spellcheck='false' aria-label='Anonymization keywords' placeholder='contoso&#10;expense-claims&#10;build01'>"
                 f"{e(kw)}</textarea><p><button>Save keywords</button></p></form>")
+    from . import llmprompts
+    body.append(llmprompts.section_html(conn, csrf, BASE))
     return Response(200, adm._shell(s, a, "Bug reports", "bugs", "".join(body), flash))
 
 
@@ -560,6 +567,20 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
                         ctype="application/json; charset=utf-8")
     if method != "POST":
         return nf
+    if len(parts) == 3 and parts[1] == "prompts":
+        from . import llmprompts
+        try:
+            text = "" if form.get("Reset", [""])[0] == "1" else form.get("Text", [""])[0]
+            got = llmprompts.save(conn, parts[2], text, s.user)
+            conn.commit()
+        except Exception as ex:  # noqa: BLE001      a database from before schema 65
+            conn.rollback()
+            print(f"system prompt {parts[2]}: {type(ex).__name__}: {ex}", file=sys.stderr)
+            got = "bad"
+        if got == "bad":
+            return nf
+        msg = "Saved:+used+from+the+next+scan+or+queue+job." if got == "saved" else "The+built-in+text+is+used+again."
+        return redirect(f"{BASE}?msg={msg}#prompt-{parts[2]}")
     if len(parts) == 2 and parts[1] == "keywords":
         text = "\n".join(parse_keywords(form.get("Keywords", [""])[0]))
         cur = conn.cursor()

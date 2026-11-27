@@ -67,6 +67,34 @@ after, so whoever fixes Containerizer sees what was tried and whether it worked.
 The try needs an LLM (Admin → Source control & LLM) and an organization scan on this machine that still has the
 commit; scan and flag the application again when it has moved on.
 
+## System prompts
+
+![System prompts on the Bug reports page: one replaced, with its text, Save and Back to the built-in text](images/admin-system-prompts.png#only-light){ .cz-shot }
+![System prompts on the Bug reports page: one replaced, with its text, Save and Back to the built-in text](images/admin-system-prompts-dark.png#only-dark){ .cz-shot }
+
+A system prompt is what Containerizer tells the LLM about its role, for one kind of question. **System prompts**
+on the same page shows each of them, and lets an administrator replace the text when the LLM goes wrong in a way
+a better instruction would prevent (it removes something it should keep, it reads a rule too strictly):
+
+| Prompt | Used for |
+|---|---|
+| Assessment and build diagnosis | Component reviews where the rules are unsure, proposals of new rules, the diagnosis of a failed build or run, and the tries of bug reports |
+| Refactoring patches and Make it A | Every code change the LLM makes for a refactoring order |
+| Egress reviews | The review of the connections the sandbox blocked |
+| Link reviews | Which application an internal-looking destination is |
+| Platform migrations | Moving containerized applications from another platform, and the sandbox tester |
+
+- **Save** puts your text in place of the built-in one. The scan worker uses it from its next scan and the LLM
+  queue from its next job; nothing restarts. The built-in text stays visible below yours, to compare.
+- **Back to the built-in text** removes the replacement. So does saving an empty text.
+- The question itself (the evidence, the file, your hint) and the form of the answer are not part of a system
+  prompt: an answer must still be the JSON its question asks for, so keep that instruction when you rewrite one.
+- A replaced prompt changes every question of its kind, for every application. Answers the LLM gave under the old
+  text are not reused: the same question is asked again.
+- Replaced prompts go into the export (`replaced_system_prompts`), anonymized like the rest, so the maintainers see
+  which wording worked better. A new version of Containerizer does not overwrite your text; go back to the
+  built-in one to get its improvements.
+
 ## Anonymization keywords
 
 Give the words the export must not carry, one per line: company, product, project, host and people's names.
@@ -91,6 +119,7 @@ Open the file before you send it: a name that is not listed stays.
  "containerizer": "0.54.7",
  "exported_at": "2026-11-27T12:10:00Z",
  "anonymized": {"keywords": 3, "replacements": 41, "how": "each keyword is replaced by one random word, the same within this file"},
+ "replaced_system_prompts": {"refactor": "..."},
  "reports": [
   {
    "id": 3, "status": "open", "flagged_at": "2026-11-27T12:04:00", "note": "restore asks a Windows folder",

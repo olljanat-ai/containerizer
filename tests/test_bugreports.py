@@ -155,6 +155,27 @@ def test_flagging_and_exporting_in_sql_server():
     assert "FROM mcr.microsoft.com/dotnet/sdk:10.0" in att["dockerfile_and_command"] and "error NU1301" in att["log"]
     assert "contoso" not in json.dumps(data["reports"]).casefold() and data["anonymized"]["replacements"] == 2
     assert br.flagged(type("A", (), {"connect_admin": lambda self: as_("cz_bug_admin")})(), {"ApplicationId": rep_app(adm)}) == {api: bug}
+    # a try is a job of the LLM queue's kind bugtry, and its result comes back with the report
+    from containerizer import llmprompts
+    from containerizer.llmqueue import SqlJobQueue
+    jid = SqlJobQueue(None).add_with(adm, {"Kind": "bugtry", "App": "contoso-shop", "ApplicationId": rep_app(adm),
+                                           "Component": "Api", "Priority": 1700, "DedupeKey": "t1", "RequestedBy": "john.doe@example.com",
+                                           "Payload": {"bug_id": bug, "hint": "try the full image at Contoso"}})
+    adm.commit()
+    assert jid
+    conn.cursor().execute("UPDATE cz.LlmJob SET Status = N'answered', Result = %s WHERE JobId = %s",
+                          (json.dumps({"outcome": "helped", "llm": {"diagnosis": "d", "plan_patch": {"base": "full"}}}), jid))
+    conn.commit()
+    t = br.export(adm)["reports"][0]["tries"]
+    assert len(t) == 1 and t[0]["outcome"] == "helped" and "contoso" not in t[0]["hint"].casefold()
+    # a replaced system prompt: the administrator writes it, the writer (worker, queue runner) reads it
+    assert llmprompts.save(adm, "refactor", "Keep every appender.", "john.doe@example.com") == "saved"
+    adm.commit()
+    assert llmprompts.load(as_("cz_bug_writer"))["refactor"]["text"] == "Keep every appender."
+    assert br.export(adm)["replaced_system_prompts"] == {"refactor": "Keep every appender."}
+    assert llmprompts.save(adm, "refactor", "", "x") == "default"
+    adm.commit()
+    assert llmprompts.load(adm) == {}
     for login in ("cz_bug_reader", "cz_bug_writer"):
         with pytest.raises(Exception):
             x = as_(login).cursor()
@@ -300,3 +321,64 @@ def test_tries_on_the_page_and_in_the_export():
     assert payload["hint"] == "use the full image" and payload["bug_id"] == 3 and payload["project"] == "src/Api/Api.csproj"
     assert payload["source"]["type"] == "org-clone" and payload["commit"] == "a" * 40 and "bugtry" in params
     assert "Write+what" in dict(_post(adm, a, "/admin/bugs/3/try", Hint=" ").headers)["Location"].replace("%20", "+")
+
+
+# --------------------------------------------------------------------------- system prompts
+
+def test_a_replaced_system_prompt_is_what_the_llm_gets(monkeypatch, tmp_path):
+    from containerizer import ai, llmprompts
+    from containerizer import refactor as rf
+    from test_llm_queue import FakeConn
+    known = llmprompts.prompts()
+    assert set(known) == {"assessment", "refactor", "egress", "links", "replatform"} and known["refactor"][2] == rf.SYSTEM
+    monkeypatch.setattr(ai, "CACHE", tmp_path / "cache")
+    monkeypatch.setenv("CONTAINERIZER_AI_BACKEND", "api")
+    seen = []
+    monkeypatch.setattr(ai, "_ask_api", lambda prompt, schema, model, effort, system: seen.append(system) or ({"a": 1}, {}))
+    conn = FakeConn({r"FROM cz.LlmPrompt": [{"Name": "refactor", "Text": "Keep every log4net appender.", "UpdatedBy": "a",
+                                             "UpdatedAt": datetime(2026, 11, 27)},
+                                            {"Name": "gone", "Text": "x", "UpdatedBy": "a", "UpdatedAt": None}]})
+    try:
+        before = ai.cache_key("p", {}, system=rf.SYSTEM)
+        assert llmprompts.apply(conn) == 1
+        ai.ask_json("p", {}, system=rf.SYSTEM)
+        ai.ask_json("p2", {})                                                    # another prompt: untouched
+        assert seen == ["Keep every log4net appender.", ai.SYSTEM]
+        assert ai.cache_key("p", {}, system=rf.SYSTEM) != before                 # another prompt, another answer
+        assert llmprompts.apply(FakeConn()) == 0 and ai.system_prompt(rf.SYSTEM) == rf.SYSTEM
+    finally:
+        ai.set_system_overrides(None)
+    c = FakeConn()
+    assert llmprompts.save(c, "refactor", "  New text \r\n", "john.doe@example.com") == "saved"
+    assert c.sql(r"INSERT cz.LlmPrompt")[-1][1] == ("refactor", "New text", "john.doe@example.com")
+    assert llmprompts.save(c, "refactor", rf.SYSTEM, "x") == "default" and llmprompts.save(c, "refactor", " ", "x") == "default"
+    assert len(c.sql(r"INSERT cz.LlmPrompt")) == 1 and len(c.sql(r"DELETE FROM cz.LlmPrompt")) == 3
+    assert llmprompts.save(c, "nope", "x", "x") == "bad"
+
+
+def test_system_prompts_on_the_page_and_in_the_export():
+    pytest.importorskip("jwt")
+    from containerizer import refactor as rf
+    from test_refactor import _get, _post
+    from test_refactor import adm as adm_fixture
+    adm = adm_fixture.__wrapped__()
+    adm.conn.answers = {r"FROM cz.LlmPrompt": [{"Name": "refactor", "Text": "Keep <every> appender at Contoso.",
+                                                "UpdatedBy": "john.doe@example.com", "UpdatedAt": datetime(2026, 11, 27, 13, 0)}],
+                        r"SELECT Keywords FROM cz.BugReportSettings": [{"Keywords": "contoso"}]}
+    a = adm.sessions.create("a@example.com", "A", True)
+    page = _get(adm, a, "/admin/bugs").body
+    assert "System prompts" in page and "Keep &lt;every&gt; appender at Contoso.</textarea>" in page
+    assert "<b>replaced</b>" in page and "Back to the built-in text" in page and page.count("<span class='muted small'>built-in</span>") == 4
+    assert "You are a senior software engineer who makes the smallest safe code change" in page      # the built-in, to compare
+    data = json.loads(_get(adm, a, "/admin/bugs/export.json").body)
+    assert list(data["replaced_system_prompts"]) == ["refactor"] and "contoso" not in json.dumps(data).casefold()
+    r = _post(adm, a, "/admin/bugs/prompts/refactor", Text="Do not remove log4net appenders.")
+    assert r.status in (302, 303) and "#prompt-refactor" in dict(r.headers)["Location"]
+    assert adm.conn.sql(r"INSERT cz.LlmPrompt")[-1][1][:2] == ("refactor", "Do not remove log4net appenders.")
+    n = len(adm.conn.sql(r"INSERT cz.LlmPrompt"))
+    assert "built-in" in dict(_post(adm, a, "/admin/bugs/prompts/refactor", Text="still here", Reset="1").headers)["Location"]
+    assert len(adm.conn.sql(r"INSERT cz.LlmPrompt")) == n and "<form" not in page.split("id='prompt-refactor'")[1].split("</form>")[0].split("<form", 2)[-1]
+    assert _post(adm, a, "/admin/bugs/prompts/nope", Text="x").status == 404
+    op = adm.sessions.create("o@example.com", "O", False, True, True, [])
+    assert _post(adm, op, "/admin/bugs/prompts/refactor", Text="x").status == 403
+    assert rf.SYSTEM

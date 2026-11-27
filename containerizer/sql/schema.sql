@@ -3671,6 +3671,17 @@ IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind
                AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob'))
     ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review', N'refactor', N'egress', N'link', N'bugtry'));
 GO
+-- (with 65) system prompts an administrator replaced (llmprompts.py): the scan worker and the queue runner read them
+IF OBJECT_ID(N'[${schema}].LlmPrompt', N'U') IS NULL
+CREATE TABLE [${schema}].LlmPrompt (
+    Name      nvarchar(40)  NOT NULL CONSTRAINT PK_LlmPrompt PRIMARY KEY,
+    Text      nvarchar(max) NOT NULL,
+    UpdatedBy nvarchar(200) NULL,
+    UpdatedAt datetime2(0)  NOT NULL CONSTRAINT DF_LlmPrompt_UpdatedAt DEFAULT SYSUTCDATETIME()
+);
+GO
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].LlmPrompt TO [${schema}_admin];
+GRANT SELECT ON [${schema}].LlmPrompt TO [${schema}_writer];
 GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BugReport TO [${schema}_admin];
 GRANT SELECT, INSERT, UPDATE ON [${schema}].BugReportSettings TO [${schema}_admin];
 GO

@@ -217,6 +217,21 @@ library a Java/Node.js component is built on), blocker (cannot run in a Linux co
 needs Windows, a desktop session, hardware, or a Windows-only vendor product)."""
 
 
+_SYSTEM_OVERRIDES: dict[str, str] = {}      # a built-in system prompt -> the text an administrator replaced it with
+
+
+def set_system_overrides(over: dict[str, str] | None) -> None:
+    """The replaced system prompts of this process (llmprompts.apply: Admin → Bug reports → System prompts)."""
+    global _SYSTEM_OVERRIDES
+    _SYSTEM_OVERRIDES = dict(over or {})
+
+
+def system_prompt(system: str | None = None) -> str:
+    """The system prompt in effect for a built-in one (None: the assessment's)."""
+    text = system or SYSTEM
+    return _SYSTEM_OVERRIDES.get(text, text)
+
+
 # --------------------------------------------------------------------------- backends
 
 BACKENDS = ("api", "cli", "openai")
@@ -336,7 +351,7 @@ def cache_key(prompt: str, schema: dict, model: str | None = None, effort: str =
     self-hosted server its URL (the same model name on another server is another model). Uses the LLM
     settings in effect (ai.configured or the environment)."""
     import hashlib
-    parts = [system or SYSTEM, prompt, schema, model_name(model), effort]
+    parts = [system_prompt(system), prompt, schema, model_name(model), effort]
     if _backend() == "openai":
         parts.append(_llm_base_url())
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:24]
@@ -430,7 +445,7 @@ def ask_json(prompt: str, schema: dict, model: str | None = None, effort: str = 
 
 def _ask_json(prompt: str, schema: dict, model: str | None, effort: str, feature: str | None, system: str | None,
               max_tokens: int | None) -> dict:
-    system = system or SYSTEM
+    system = system_prompt(system)
     tags = _tags(feature)
     model = model_name(model)
     backend = _backend()
