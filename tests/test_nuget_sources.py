@@ -181,3 +181,26 @@ def test_no_registered_sources_no_change(tmp_path):
     root = tmp_path / "app"
     web_app(root)
     assert nugetsources.plan_sources(root, "src/Web/Web.csproj", {}) is None
+
+
+def test_windows_folder_sources_are_disabled(tmp_path, monkeypatch):
+    # Visual Studio's offline packages folder: on Linux "/src/C:/Program Files (x86)/..." does not exist (NU1301)
+    root = tmp_path / "app"
+    web_app(root)
+    write(root, "nuget.config", """<configuration><packageSources>
+      <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+      <add key="Microsoft Visual Studio Offline Packages" value="C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\" />
+      <add key="share" value="\\\\build01\\packages" />
+      <add key="local" value="./packages" />
+    </packageSources></configuration>""")
+    got = nugetsources.plan_sources(root, "src/Web/Web.csproj", {})
+    assert [w[:2] for w in got["windows"]] == [["Microsoft Visual Studio Offline Packages", "nuget.config"],
+                                               ["share", "nuget.config"]]
+    monkeypatch.setattr(feedproxy, "active", lambda: None)
+    a = assess(root)
+    out = tmp_path / "out"
+    generate_app(a, out)
+    df = (out / k8s_name(a.components[0].name) / "Dockerfile").read_text()
+    off = "dotnet nuget disable source 'Microsoft Visual Studio Offline Packages' --configfile nuget.config"
+    assert off in df and df.index(off) < df.index("dotnet restore") and "disable source share" in df
+    assert "nuget-windows-sources" in df and "## NuGet package sources" not in (out / "MIGRATION.md").read_text()

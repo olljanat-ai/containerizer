@@ -32,6 +32,9 @@ NUGET_ORG = ("nuget.org", "https://api.nuget.org/v3/index.json")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._@+()-]{0,99}")
 DOCS = "https://learn.microsoft.com/en-us/nuget/consume-packages/package-source-mapping"
 MAX_TEXT = 2000
+# a local source that is a folder of a Windows machine (C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\, a share,
+# %ProgramFiles%\\...): in a Linux build a name under the config's folder that does not exist (NU1301)
+WINDOWS_SOURCE = re.compile(r"^([A-Za-z]:[\\/]|\\\\|%[A-Za-z_()0-9]+%)")
 USER_CONFIG = "/root/.nuget/NuGet/NuGet.Config"   # the build stage's user-level config (the SDK images build as root)
 
 
@@ -140,15 +143,19 @@ def plan_sources(root: Path, project_rel: str, known: dict[str, tuple[str, str]]
     """What the build adds: {"config": path in the repository, or "" for the build's user-level NuGet.Config,
     "add": [[name, url], ...] (mapped names the repository does not define), "machine": [[name, url], ...] (the
     registered sources, for a repository that does not clear the machine's), "missing": [names], "same": [[name,
-    the other name]]}; None when nothing is added or missing.
+    the other name]], "windows": [[name, the config that defines it, its folder]] (local sources that are folders
+    of a Windows machine: disabled for the build)}; None when nothing is added, disabled or missing.
 
     NuGet takes a URL once: of two sources with the same URL, restore keeps the first, and packages mapped to the
     other's name are not found. A name whose URL is already a source is not added but listed in "same"."""
     root = Path(root)
     configs = _configs(root, root / project_rel)
-    defined, urls, mapped, clear = set(), {}, {}, False
+    defined, urls, mapped, clear, windows = set(), {}, {}, False, []
     for f in configs:
         d, m, c = _read(f)
+        windows += [[k, f.relative_to(root.resolve()).as_posix(), u] for k, u in d.items()
+                    if WINDOWS_SOURCE.match(u) and NAME_RE.fullmatch(k)
+                    and k.casefold() not in {w[0].casefold() for w in windows}]
         defined |= {k.casefold() for k in d}
         for k, u in d.items():
             urls.setdefault(u.rstrip("/").casefold(), k)
@@ -178,10 +185,10 @@ def plan_sources(root: Path, project_rel: str, known: dict[str, tuple[str, str]]
             if url.rstrip("/").casefold() not in urls and name.casefold() not in defined:
                 machine.append([name, url])
                 urls[url.rstrip("/").casefold()] = name
-    if not add and not missing and not same and not machine:
+    if not add and not missing and not same and not machine and not windows:
         return None
     return {"config": configs[0].relative_to(root.resolve()).as_posix() if clear else "", "add": add,
-            "machine": machine, "missing": missing, "same": same}
+            "machine": machine, "missing": missing, "same": same, **({"windows": windows} if windows else {})}
 
 
 def dockerfile_lines(plan: dict) -> list[str]:
@@ -189,12 +196,17 @@ def dockerfile_lines(plan: dict) -> list[str]:
     sources, else into the build's user-level one (where a developer's machine has them)."""
     ns = plan.get("nuget_sources") or {}
     todo = (ns.get("add") or []) + (ns.get("machine") or [])
+    out = []
+    if ns.get("windows"):
+        off = [f"dotnet nuget disable source {shlex.quote(n)} --configfile {shlex.quote(c)}" for n, c, _ in ns["windows"]]
+        out += ["# local package sources that are folders of a Windows machine: not there in this build (NU1301)",
+                "RUN " + " \\\n && ".join(off)]
     if not todo:
-        return []
+        return out
     cfg = shlex.quote(ns.get("config") or USER_CONFIG)
     cmds = [f"dotnet nuget add source {shlex.quote(u)} -n {shlex.quote(n)} --configfile {cfg}" for n, u in todo]
-    return ["# package sources the developers' machines have in their own NuGet.Config (MIGRATION.md)",
-            "RUN " + " \\\n && ".join(cmds)]
+    return out + ["# package sources the developers' machines have in their own NuGet.Config (MIGRATION.md)",
+                  "RUN " + " \\\n && ".join(cmds)]
 
 
 def reason(plan: dict) -> None:
@@ -212,6 +224,12 @@ def reason(plan: dict) -> None:
                    "NuGet.Config, as on a developer's machine.")
     if why:
         add_reason(plan, "nuget-sources", " ".join(why), [DOCS])
+    if ns.get("windows"):
+        add_reason(plan, "nuget-windows-sources", "The repository's NuGet.Config names local package sources that are "
+                   "folders of a Windows machine (" + ", ".join(f"{n}: {v}" for n, _, v in ns["windows"]) + "): the "
+                   "build disables them, since restore stops on a local source that does not exist (NU1301). Packages "
+                   "only that folder has must come from a feed.",
+                   ["https://learn.microsoft.com/en-us/nuget/reference/errors-and-warnings/nu1301"])
 
 
 def migration_markdown(notes: dict[str, dict]) -> str:

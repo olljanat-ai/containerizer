@@ -170,6 +170,11 @@ a line of names alone means the feed's URL itself (not for an Azure Artifacts fe
 organization's URL, which is no NuGet source: give each name its `_packaging/<feed>/nuget/v3/index.json` URL). A name belongs to one feed only (names compare case-insensitively,
 as NuGet's do).
 
+A NuGet.Config may also name a folder of a Windows machine as a source (Visual Studio's offline packages
+`C:\Program Files (x86)\Microsoft SDKs\NuGetPackages\`, a share, `%ProgramFiles%\...`). In a Linux build that folder
+does not exist and restore stops with `NU1301`, so the generated Dockerfile disables such sources before restore
+(`dotnet nuget disable source`); the repository is not changed.
+
 Many repositories do not name the internal feed at all: no NuGet.Config, or one without package source mapping,
 and restore takes the feed from the machine's own NuGet.Config. In the container that ends with `NU1101: No packages
 exist with this id in source(s): nuget.org`. So the registered sources count as the machine's too.

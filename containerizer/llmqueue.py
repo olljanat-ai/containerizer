@@ -316,6 +316,16 @@ def link_handler(job: dict) -> dict:
 
 
 register(LINK, "Link review", link_handler, "link-queued")
+BUGTRY = "bugtry"
+
+
+def bugtry_handler(job: dict) -> dict:
+    """A fix an administrator asked the LLM to try for a flagged build or run failure (bugreports.try_handler)."""
+    from .bugreports import try_handler
+    return try_handler(job)
+
+
+register(BUGTRY, "Bug report try", bugtry_handler, "bugtry-queued")
 
 
 # --------------------------------------------------------------------------- component reviews: what, how urgent
@@ -1361,6 +1371,13 @@ class Runner:
                          round(seconds, 1), *(out.get("tokens") or (None, None)), _cut(row.get("_endpoint"), 400),
                          row.get("_parallel") or 1, row["JobId"], self.name))
             conn.commit()
+            if out.get("snapshot"):             # the order's code browser (codebrowse.py); the answer stands without it
+                try:
+                    from . import codebrowse
+                    codebrowse.store(conn, row["JobId"], row.get("ApplicationId"), out["snapshot"])
+                    conn.commit()
+                except Exception as ex:  # noqa: BLE001      a database from before schema 64
+                    self.log(f"#{row['JobId']} code browser snapshot: {type(ex).__name__}: {ex}"[:400])
         finally:
             conn.close()
         self.log(f"#{row['JobId']} {row['Kind']} {row.get('Repository')}/{row.get('Component') or ''}: "
@@ -1622,6 +1639,8 @@ class Runner:
         (ai.configured is process-wide)."""
         from .ai import configured
         if self._ctx is None:
+            from . import llmprompts
+            llmprompts.apply(conn)          # the system prompts an administrator replaced (Admin → Bug reports)
             self._ctx = configured(self.llm_settings(conn))
             self._ctx.__enter__()
 

@@ -8,6 +8,48 @@ yourself: a tag push starts the release too). Each release publishes the applian
 release (X.Y.Z, Z > 0) must not change the OS image (`appliance/`, `monitoring/`) since X.Y.0: appliances install
 it as an app update, without an OS upgrade. OS changes go into a minor or major release.
 
+## 0.54.7 (2026-11-27)
+
+- **New: bug reports.** An administrator flags a component whose build or run failed in a way that looks like a
+  fault of Containerizer (**Flag as a Containerizer bug** in its *Build and run* block, with a note). The case is
+  copied then (schema 65, `cz.BugReport`: the component's facts, every attempt's Dockerfile, build command and log,
+  its findings; not the source code), since the next scan replaces the logs. **Admin → Bug reports** lists the
+  cases (the open ones by default; **Resolved** and **Close** move a report to the *Resolved and closed* view,
+  and free-text **labels** with a filter keep similar cases together) and exports the ones shown as one JSON file
+  for whoever maintains Containerizer. **Anonymization keywords** (one
+  per line) are replaced everywhere in the export by random words, the same word for the same keyword within a
+  file. **Let the LLM try** takes your words on what to try for a report: the LLM queue (kind `bugtry`) builds
+  and runs the component as it is, asks the LLM for a change that follows them (the build plan, and when you allow
+  it the application's code, up to 50 lines unless you choose another limit from 25 to 1,000; at most three LLM
+  calls a try), builds and runs again
+  with it and records the result (*Helped*, *Got further*, *Did not help*, *Worse*, *Already fixed*, *Nothing to
+  try*) with a rating of one to five stars for how far the build and run got. Every try is kept with its diagnosis,
+  plan change and code diff; **Continue from this try** starts the next one from any try's changes, *best so far*
+  marks where to go on, and a report with tries is closed, never removed. A report with a five-star try is
+  marked resolved by itself once the application rates A and the component runs healthy in the sandbox. The tries are in the export. **System prompts** on the same page shows what Containerizer tells the LLM
+  about its role for each kind of question (assessment and build diagnosis, refactoring, egress reviews, link
+  reviews, platform migrations) and lets an administrator replace the text (`cz.LlmPrompt`); the scan worker and
+  the queue runner use it from their next scan or job, and replaced prompts are in the export
+  ([docs/bug-reports.md](docs/bug-reports.md)).
+- **New: browse the code of a refactoring order.** **Browse the code** on the order's page shows the application's
+  files at the assessed commit and with the patch, like a repository browser: a folder tree with the files the
+  patch adds, changes and removes marked, any file with its changed lines highlighted, both sides next to each
+  other, the raw text, *Go to file* and *changed files only*. The queue runner keeps the application's folder with
+  the order when the patch is made (schema 64, `cz.LlmJobSource`: text files up to 512 KiB each and 64 MiB
+  together, compressed, for the newest three orders of an application), so it works after the clone moved on.
+  Orders made before this version show the diff only
+  ([docs/refactoring.md](docs/refactoring.md#browse-the-code)).
+- **Fixed: a NuGet.Config that names a folder of a Windows machine as a package source stopped restore with
+  NU1301.** Visual Studio's offline packages (`C:\Program Files (x86)\Microsoft SDKs\NuGetPackages\`), a share
+  (`\\server\packages`) or `%ProgramFiles%\...` is, in a Linux build, a folder under the config's own that does not
+  exist (*The local source '/src/.../C:/Program Files (x86)/Microsoft SDKs/NuGetPackages/' doesn't exist*). The
+  generated Dockerfile now disables such sources before restore (`dotnet nuget disable source`, reason
+  `nuget-windows-sources`); the repository is not changed. Packages only that folder has must come from a feed.
+- **Fixed: a package that requires one Node.js release (`"engines": {"node": "24.5.0"}`) failed the build on every
+  line.** The images have each line's newest release, so the line the range names is used and the declaration is
+  not enforced at install time, as for a range no image satisfies. The same for a range that ends inside a line
+  (`~24.5.0`, `<24.6`).
+
 ## 0.54.6 (2026-11-27)
 
 - **Fixed: a Windows path as a writable folder stopped the test run with `docker: invalid spec ... too many

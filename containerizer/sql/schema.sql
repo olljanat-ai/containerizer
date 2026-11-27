@@ -3615,3 +3615,77 @@ END;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 63) INSERT [${schema}].SchemaVersion (Version) VALUES (63);
 GO
+
+-- 64: the code browser of a refactoring order (codebrowse.py): the application's files at the assessed commit and
+-- with the patch, a zip in parts of 512 KiB. The queue runner writes it and keeps the newest three per
+-- application; the admin site reads it. Source code: no audit rows, never in the change history.
+IF OBJECT_ID(N'[${schema}].LlmJobSource', N'U') IS NULL
+CREATE TABLE [${schema}].LlmJobSource (
+    JobId         bigint         NOT NULL,
+    Seq           int            NOT NULL,
+    ApplicationId int            NULL,
+    Data          varbinary(max) NOT NULL,
+    CreatedAt     datetime2(0)   NOT NULL CONSTRAINT DF_LlmJobSource_CreatedAt DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_LlmJobSource PRIMARY KEY (JobId, Seq)
+);
+GO
+GRANT SELECT, INSERT, DELETE ON [${schema}].LlmJobSource TO [${schema}_writer];
+GRANT SELECT ON [${schema}].LlmJobSource TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 64) INSERT [${schema}].SchemaVersion (Version) VALUES (64);
+GO
+
+-- 65: suspected Containerizer bugs (bugreports.py): a failed component's case as an administrator flagged it (its
+-- facts, every attempt's Dockerfile, command and log, its findings; gzip JSON, copied because the next scan replaces
+-- the logs), and the keywords the export replaces. Administrators only; no foreign keys: a report outlives its scan.
+IF OBJECT_ID(N'[${schema}].BugReport', N'U') IS NULL
+CREATE TABLE [${schema}].BugReport (
+    BugId         int IDENTITY(1,1) NOT NULL CONSTRAINT PK_BugReport PRIMARY KEY,
+    ApplicationId int            NULL,
+    ComponentId   int            NULL,
+    AssessmentId  int            NULL,
+    App           nvarchar(200)  NOT NULL,
+    Component     nvarchar(200)  NOT NULL,
+    VerifyStatus  nvarchar(40)   NULL,
+    Status        nvarchar(10)   NOT NULL CONSTRAINT DF_BugReport_Status DEFAULT N'open'
+                  CONSTRAINT CK_BugReport_Status CHECK (Status IN (N'open', N'resolved', N'closed')),
+    Note          nvarchar(1000) NULL,
+    Labels        nvarchar(400)  NULL,              -- comma-separated, as the administrators wrote them
+    StatusNote    nvarchar(300)  NULL,              -- who or what set the status; NULL: nobody yet (auto_resolve may)
+    CreatedBy     nvarchar(200)  NULL,
+    CreatedAt     datetime2(0)   NOT NULL CONSTRAINT DF_BugReport_CreatedAt DEFAULT SYSUTCDATETIME(),
+    ExportedAt    datetime2(0)   NULL,
+    DataGz        varbinary(max) NOT NULL
+);
+GO
+IF OBJECT_ID(N'[${schema}].BugReportSettings', N'U') IS NULL
+CREATE TABLE [${schema}].BugReportSettings (
+    Id       tinyint       NOT NULL CONSTRAINT PK_BugReportSettings PRIMARY KEY CONSTRAINT CK_BugReportSettings_Id CHECK (Id = 1),
+    Keywords nvarchar(max) NULL
+);
+GO
+-- (with 65) the LLM queue's kind `bugtry`: a fix an administrator asked the LLM to try for a report
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+           AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob') AND definition NOT LIKE N'%bugtry%')
+    ALTER TABLE [${schema}].LlmJob DROP CONSTRAINT CK_LlmJob_Kind;
+GO
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_LlmJob_Kind'
+               AND parent_object_id = OBJECT_ID(N'[${schema}].LlmJob'))
+    ALTER TABLE [${schema}].LlmJob ADD CONSTRAINT CK_LlmJob_Kind CHECK (Kind IN (N'review', N'refactor', N'egress', N'link', N'bugtry'));
+GO
+-- (with 65) system prompts an administrator replaced (llmprompts.py): the scan worker and the queue runner read them
+IF OBJECT_ID(N'[${schema}].LlmPrompt', N'U') IS NULL
+CREATE TABLE [${schema}].LlmPrompt (
+    Name      nvarchar(40)  NOT NULL CONSTRAINT PK_LlmPrompt PRIMARY KEY,
+    Text      nvarchar(max) NOT NULL,
+    UpdatedBy nvarchar(200) NULL,
+    UpdatedAt datetime2(0)  NOT NULL CONSTRAINT DF_LlmPrompt_UpdatedAt DEFAULT SYSUTCDATETIME()
+);
+GO
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].LlmPrompt TO [${schema}_admin];
+GRANT SELECT ON [${schema}].LlmPrompt TO [${schema}_writer];
+GRANT SELECT, INSERT, UPDATE, DELETE ON [${schema}].BugReport TO [${schema}_admin];
+GRANT SELECT, INSERT, UPDATE ON [${schema}].BugReportSettings TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 65) INSERT [${schema}].SchemaVersion (Version) VALUES (65);
+GO

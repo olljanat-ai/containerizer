@@ -98,6 +98,8 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict, flash:
             code = (q.get("notice") or [""])[0]
             return download(conn, int(m[1])) if m[2] else show_order(adm, conn, s, a, int(m[1]),
                                                                      ORDER_NOTICES.get(code, flash))
+        if len(parts) == 3 and parts[2] == "code" and method == "GET" and not m[2]:
+            return show_code(adm, conn, s, a, r, q)
         if len(parts) == 3 and parts[2] == "repair" and method == "POST" and not m[2]:
             return repair(adm, conn, s, a, r)
         if len(parts) == 3 and parts[2] == "rebuild" and method == "POST" and not m[2]:
@@ -647,7 +649,10 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
     if res.get("patch") and st in ("verified", "applies-only"):
         label = "Verified: it applies, builds and runs." if st == "verified" else \
             f"Applies only: {res.get('reason') or 'the build or the run did not succeed'}."
-        body.append(f"<div class='formrow'><a class='button' href='{BASE}/{ident}.patch' download>Download .patch</a>"
+        from . import codebrowse
+        browse = (f"<a class='button secondary' href='{BASE}/{ident}/code'>Browse the code</a>"
+                  if codebrowse.exists(conn, ident) else "")
+        body.append(f"<div class='formrow'><a class='button' href='{BASE}/{ident}.patch' download>Download .patch</a>{browse}"
                     f"<span class='muted small'>{e(res.get('filename') or '')} · {e(label)}</span></div>")
     if res:
         body.append(_findings_table(res))
@@ -683,6 +688,31 @@ def show_order(adm, conn, s, a, ident: int, flash: str) -> Response:
     title = (f"Make it A #{ident}: {r.get('App') or ''}" if pl.get("goal") == "rating-a" else
              f"Refactoring #{ident}: {r.get('App') or ''}" + (f" / {r['Component']}" if r.get("Component") else ""))
     return Response(200, adm._shell(s, a, title, "refactoring", "".join(body), flash))
+
+
+def show_code(adm, conn, s, a, r: dict, q: dict) -> Response:
+    """The order's code browser (codebrowse.py): the application's files as assessed and with the patch."""
+    from . import codebrowse
+    ident = int(r["JobId"])
+    snap = codebrowse.load(conn, ident)
+    if snap is None:
+        return Response(404, adm._shell(s, a, "No code to browse", "refactoring",
+                                        f"<p>This order has no code kept (it has no patch, it was made before version "
+                                        f"0.54.7, or newer orders of the application took its place). "
+                                        f"<a href='{BASE}/{ident}'>Back to the order</a></p>"))
+    base = f"{BASE}/{ident}/code"
+    if (q.get("raw") or [""])[0] == "1":
+        path = codebrowse.clean_path((q.get("path") or [""])[0])
+        side = "original" if (q.get("side") or [""])[0] == "original" else "patched"
+        text = snap.text(path, side) if path in snap.files else None
+        if text is None:
+            return Response(404, "No text kept for this file.\n", ctype="text/plain; charset=utf-8")
+        return Response(200, text.encode("utf-8"), [("X-Content-Type-Options", "nosniff"),
+                                                    ("Content-Disposition", "inline")], ctype="text/plain; charset=utf-8")
+    title = f"Code of refactoring #{ident}: {r.get('App') or ''}"
+    body = (f"<p class='crumbs'><a href='{BASE}'>Refactoring</a> › <a href='{BASE}/{ident}'>Order #{ident}</a> › Code</p>"
+            + codebrowse.page_html(snap, base, r.get("App") or "", q))
+    return Response(200, adm._shell(s, a, title, "refactoring", body))
 
 
 def download(conn, ident: int) -> Response:

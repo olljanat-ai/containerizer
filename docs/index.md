@@ -398,6 +398,45 @@ runs the container. You get a coloured diff, the result per finding and a `.patc
 
 <div markdown>
 
+### Read the patch like a repository
+
+**Browse the code** opens the application's files as they were at the assessed commit and as they are with the
+patch: a folder tree with the changed files marked, any file with its changed lines highlighted, and both
+sides next to each other. It is kept with the order, so it still works after the repository has moved on.
+
+[Browse the code :octicons-arrow-right-24:](refactoring.md#browse-the-code)
+
+</div>
+
+![The code browser of a refactoring order: the folder tree and a patched file](images/admin-refactoring-code.png#only-light){ .cz-shot }
+![The code browser of a refactoring order: the folder tree and a patched file](images/admin-refactoring-code-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature" markdown>
+
+<div markdown>
+
+### When the tool is wrong, say so and test your idea
+
+A build that failed because of Containerizer itself can be **flagged** where you see it. Write what you think
+would fix it and the LLM tries it: the component is built and run with and without the change, and the report
+says whether it helped. The system prompts the LLM works under are shown there too, and you can replace them. Export the reports as JSON for the maintainers, with the names you choose replaced
+by random words.
+
+[Bug reports :octicons-arrow-right-24:](bug-reports.md)
+
+</div>
+
+![Let the LLM try: a hint per bug report, the change and whether it helped](images/admin-bug-tries.png#only-light){ .cz-shot }
+![Let the LLM try: a hint per bug report, the change and whether it helped](images/admin-bug-tries-dark.png#only-dark){ .cz-shot }
+
+</div>
+
+<div class="cz-feature cz-reverse" markdown>
+
+<div markdown>
+
 ### A person approves what the AI learns
 
 Fixes the learning loop discovers arrive as rule proposals with their evidence. Approve, edit or

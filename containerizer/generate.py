@@ -1302,8 +1302,9 @@ def generate_app(a: AppAssessment, out: Path, rules: list[Rule] | None = None, r
         if buildable(c):
             plan = (plans or {}).get(c.name) or make_plan(a, c, rules)
             measured_memory(plan, measured_usage(a, c))
-            if plan.get("nuget_sources"):
-                nuget_notes[k8s_name(c.name)] = plan["nuget_sources"]
+            ns = plan.get("nuget_sources") or {}
+            if ns.get("add") or ns.get("machine") or ns.get("same") or ns.get("missing"):
+                nuget_notes[k8s_name(c.name)] = ns
             cdir.mkdir(parents=True, exist_ok=True)
             if c.role == "spa":
                 plan["port"], plan["health"] = 8080, "/healthz"

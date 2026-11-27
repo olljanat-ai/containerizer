@@ -239,7 +239,8 @@ def test_every_kind_can_need_approval_and_the_queue_limit():
             return ""
     html = admin_llmqueue.settings_form(_Adm(), None, dict(llmqueue.DEFAULTS))
     for k in llmqueue.JOB_KINDS:
-        assert f"name='ApproveKind' value='{k}' checked" in html
+        # a bug report try is asked for by an administrator, who would also approve it: it can be ticked, and is not
+        assert f"name='ApproveKind' value='{k}'{'' if k == 'bugtry' else ' checked'}" in html
     assert "name='ApproveMaxQueued'" in html and "name='RejectAfterHours'" in html
     v, errors = admin_llmqueue.validate_settings({"RejectAfterHours": ["48"]})
     assert errors == [] and v["RejectAfterHours"] == 48
@@ -269,7 +270,7 @@ def test_approval_is_on_by_default_and_approve_all(adm):  # noqa: F811
     from containerizer import llmqueue
     # every kind waits by default, link and egress reviews too (they started by themselves before)
     assert llmqueue.DEFAULTS["ApproveKinds"] == "egress,link,refactor,review" and llmqueue.DEFAULTS["ApproveMinTokens"] == 0
-    assert set(llmqueue.DEFAULTS["ApproveKinds"].split(",")) == set(llmqueue.JOB_KINDS)
+    assert set(llmqueue.DEFAULTS["ApproveKinds"].split(",")) == set(llmqueue.JOB_KINDS) - {"bugtry"}   # an administrator's own
     assert "all egress reviews, link reviews, refactoring orders and component reviews wait" in \
         admin_llmqueue.approval_text(llmqueue.DEFAULTS)
     adm.route_scans = lambda *a: None
