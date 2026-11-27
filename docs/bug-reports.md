@@ -17,8 +17,8 @@ its *Build and run* block, with room for a short note on why it looks like the t
 
 The case is copied at that moment, because the next scan of the application replaces the component's logs:
 
-- the component's facts (name, project path, role, target framework, verdict) and the application's rating, commit
-  and the version that scanned it;
+- the component's facts (name, project path, role, target framework, verdict) and the application's rating and
+  commit;
 - the verification result and its excerpt;
 - every attempt's Dockerfile, `docker build` command and log (up to 300,000 characters each: its start and its end);
 - the component's findings (rule, severity, title, evidence).
@@ -47,6 +47,34 @@ tries is closed and kept instead, see below).
 
 ![Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords](images/admin-bug-reports.png#only-light){ .cz-shot }
 ![Admin, Bug reports: the flagged cases, Export JSON and the anonymization keywords](images/admin-bug-reports-dark.png#only-dark){ .cz-shot }
+
+## Working through B-rated applications
+
+A rating of **B** means *targeted code changes*: the application should become **A**, or there should be a
+recorded reason why it cannot. The aim is that no application stays B without a decision. Nothing here happens
+by itself: it is the order in which an administrator works through them.
+
+1. **Make it A** ([Refactoring patches](refactoring.md#make-it-a)). Most B applications end here.
+2. **Try again with your own words.** When the patch does not verify, flag the failed component and use
+   *Let the LLM try* below with what you think is wrong, allowing code changes when the build plan is not enough.
+   Go on from the best try, not necessarily the latest.
+3. **Flag what looks like the tool's fault** and export it, so Containerizer gets fixed. After the fix, scan the
+   application again.
+4. **When none of that makes it A, decide which case it is**, label the report with it, and act:
+
+| Case | What to do |
+|---|---|
+| Containerizer is still wrong | Keep the report open for the maintainers (label it, for example `tool`) |
+| The tries showed a real obstacle in the code: a Windows-only API or library, a component that cannot move | Propose a rule for it ([Self-learning loop](overview.md#self-learning-loop)). Once a person approves it, the application is rated by that rule: **C** when part of it must stay on Windows and the rest can move, **D** when it needs a port. Then mark the report resolved |
+| It only needs work no LLM managed | Hand the best try's patch (**Download .patch**) to a developer, label the report (for example `developer`), and close it |
+
+- **Do not change a rating because attempts failed.** A rating says what the code needs, not how well the LLM or
+  the tool did; it changes only through a rule a person approved. An application that cannot be made A leaves B
+  by getting the rule that says why.
+- **Persistent storage is not a reason for B.** A component that keeps its own data rates A when it otherwise runs
+  with configuration only: it is shown as *Stateful* and deployed with a persistent volume and one replica
+  ([Application data on persistent volumes](overview.md#application-data-on-persistent-volumes)). An application
+  that is B only because of its data is a case to flag.
 
 ## Let the LLM try
 
@@ -179,7 +207,7 @@ as `containerizer-bug-reports-<date>.json`:
   {
    "id": 3, "status": "open", "flagged_at": "2026-11-27T12:04:00", "labels": ["nuget", "windows path"],
    "note": "restore asks a Windows folder",
-   "application": "maple-3f9a", "rating": "B", "commit": "abcdef012345", "scanned_with": "0.54.6",
+   "application": "maple-3f9a", "rating": "B", "commit": "abcdef0123456789...",
    "component": {"name": "maple-3f9a.Api", "project": "src/maple-3f9a.Api/maple-3f9a.Api.csproj", "role": "web"},
    "verification": {"status": "build-failed", "detail": "..."},
    "attempts": [{"attempt": 1, "stage": "build", "dockerfile_and_command": "...", "log": "..."}],

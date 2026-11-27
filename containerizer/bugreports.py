@@ -164,14 +164,14 @@ def collect(conn, component_id: int) -> dict | None:
     cur = conn.cursor(as_dict=True)
     cur.execute("SELECT c.ApplicationId, c.ApplicationName, c.AssessmentId, c.ComponentId, c.ComponentName, c.ProjectPath, "
                 "c.Role, c.Tier, c.TargetFramework, c.Verdict, c.VerdictText, c.VerifyStatus, c.VerifyDetail, "
-                "aa.Rating, aa.ToolVersion, aa.SourceCommit, aa.AssessedAt FROM cz.vComponentLatest c "
-                "JOIN cz.ApplicationAssessment aa ON aa.AssessmentId = c.AssessmentId WHERE c.ComponentId = %s",
+                "aa.Rating, aa.SourceCommit, aa.AssessedAt FROM cz.vComponentLatest c "
+                "JOIN cz.vApplicationLatest aa ON aa.AssessmentId = c.AssessmentId WHERE c.ComponentId = %s",
                 (int(component_id),))
     rows = cur.fetchall()
     if not rows or rows[0].get("VerifyStatus") not in VERIFY_FAILED:
         return None
     r = rows[0]
-    cur.execute("SELECT RuleId, Severity, Title, Evidence FROM cz.Finding WHERE AssessmentId = %s AND ComponentId = %s "
+    cur.execute("SELECT RuleId, Severity, Title, Evidence FROM cz.vFindingLatest WHERE AssessmentId = %s AND ComponentId = %s "
                 "ORDER BY FindingId", (r["AssessmentId"], r["ComponentId"]))
     findings = [{"rule": f["RuleId"], "severity": f["Severity"], "title": f["Title"],
                  "evidence": (f.get("Evidence") or "")[:400]} for f in cur.fetchall()]
@@ -190,10 +190,10 @@ def collect(conn, component_id: int) -> dict | None:
     except Exception:  # noqa: BLE001      a database from before schema 61: the excerpt alone
         pass
     return {"application_id": r["ApplicationId"], "assessment_id": r["AssessmentId"], "component_id": r["ComponentId"],
-            "case": {"containerizer": __version__, "scanned_with": r.get("ToolVersion"),
+            "case": {"containerizer": __version__,
                      "scanned_at": r["AssessedAt"].isoformat() if r.get("AssessedAt") else None,
                      "application": r["ApplicationName"], "rating": r.get("Rating"),
-                     "commit": (r.get("SourceCommit") or "")[:12] or None,
+                     "commit": r.get("SourceCommit") or None,
                      "component": {"name": r["ComponentName"], "project": r["ProjectPath"], "role": r["Role"],
                                    "tier": r["Tier"], "target_framework": r.get("TargetFramework"),
                                    "verdict": r["Verdict"], "verdict_text": r.get("VerdictText")},
@@ -356,21 +356,22 @@ def queue_try(conn, bug_id: int, hint: str, parent: int | None = None, code_line
     if not hint:
         return None, "Write what the LLM should try."
     cur = conn.cursor(as_dict=True)
-    cur.execute("SELECT b.BugId, b.ApplicationId, b.AssessmentId, b.App, b.Component, b.DataGz, a.RepositoryUrl, a.SourcePath, "
-                "a.SourceKey, aa.SourceCommit FROM cz.BugReport b JOIN cz.Application a ON a.ApplicationId = b.ApplicationId "
-                "LEFT JOIN cz.ApplicationAssessment aa ON aa.AssessmentId = b.AssessmentId WHERE b.BugId = %s", (int(bug_id),))
+    # the commit is the report's own (the case): the application may have been scanned again since
+    cur.execute("SELECT b.BugId, b.ApplicationId, b.AssessmentId, b.App, b.Component, b.DataGz, a.RepositoryUrl, a.SourcePath "
+                "FROM cz.BugReport b JOIN cz.vApplicationLatest a ON a.ApplicationId = b.ApplicationId "
+                "WHERE b.BugId = %s", (int(bug_id),))
     rows = cur.fetchall()
     if not rows:
         return None, "The report's application is no longer there."
     r = rows[0]
-    source = order_source(conn, {"RepositoryUrl": r.get("RepositoryUrl"), "SourcePath": r.get("SourcePath")})
-    if source is None or not r.get("SourceCommit"):
-        return None, ("No organization scan on this machine has the application's source at the flagged commit: "
-                      "scan it again and flag it again.")
     try:
         case = json.loads(gzip.decompress(bytes(r["DataGz"])).decode("utf-8"))
     except (OSError, EOFError, ValueError, TypeError):
         return None, "The report cannot be read."
+    source = order_source(conn, {"RepositoryUrl": r.get("RepositoryUrl"), "SourcePath": r.get("SourcePath")})
+    if source is None or not case.get("commit"):
+        return None, ("No organization scan on this machine has the application's source at the flagged commit: "
+                      "scan it again and flag it again.")
     base = None
     if parent:
         got = _job_try(conn, parent)
@@ -382,7 +383,7 @@ def queue_try(conn, bug_id: int, hint: str, parent: int | None = None, code_line
                 "status": last.get("status"), "steps": last.get("steps") or "", "log_tail": last.get("log_tail") or ""}
     project = (case.get("component") or {}).get("project")
     payload = {"bug_id": int(r["BugId"]), "app": r["App"], "application_id": r["ApplicationId"], "component": r["Component"],
-               "project": project, "source": source, "commit": r["SourceCommit"], "hint": hint, "code_lines": code_lines,
+               "project": project, "source": source, "commit": case["commit"], "hint": hint, "code_lines": code_lines,
                "parent": int(parent) if parent else None, "base": base,
                "flagged_status": (case.get("verification") or {}).get("status")}
     key = hashlib.sha256(f"{r['BugId']}|{parent or 0}|{code_lines}|{hint}".encode()).hexdigest()
@@ -984,7 +985,7 @@ def route(adm, conn, s, a, method: str, parts: list, q: dict, form: dict):
     if len(parts) == 3 and parts[1] in ("flag", "unflag") and re.fullmatch(r"\d{1,9}", parts[2]):
         cid = int(parts[2])
         cur = conn.cursor(as_dict=True)
-        cur.execute("SELECT ApplicationId FROM cz.Component WHERE ComponentId = %s", (cid,))
+        cur.execute("SELECT ApplicationId FROM cz.vComponentLatest WHERE ComponentId = %s", (cid,))
         rows = cur.fetchall()
         if not rows:
             return nf

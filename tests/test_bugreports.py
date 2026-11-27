@@ -151,7 +151,7 @@ def test_flagging_and_exporting_in_sql_server():
     adm.commit()
     data = br.export(adm)
     rep = data["reports"][0]
-    assert rep["id"] == bug and rep["note"] == "restore asks a Windows folder" and rep["commit"] == "abcdef012345"
+    assert rep["id"] == bug and rep["note"] == "restore asks a Windows folder" and rep["commit"] == "abcdef0123456789"
     assert rep["component"]["project"] == "src/Api/Api.csproj" and rep["verification"]["status"] == "build-failed"
     assert rep["findings"] == [{"rule": "cert-store", "severity": "config", "title": "Certificate store",
                                 "evidence": "src/Api/Program.cs:3"}]
@@ -392,7 +392,7 @@ def test_tries_on_the_page_and_in_the_export():
              "Status": "open", "Note": None, "CreatedBy": "john.doe@example.com", "CreatedAt": datetime(2026, 11, 27, 12, 0),
              "ExportedAt": None, "Bytes": 900}]
     case = {"application": "shop", "component": {"name": "Api", "project": "src/Api/Api.csproj"},
-            "verification": {"status": "run-failed", "detail": "x"}, "attempts": []}
+            "verification": {"status": "run-failed", "detail": "x"}, "attempts": [], "commit": "a" * 40}
     jobs = [{"JobId": 21, "Status": "answered", "Error": None, "Note": None, "QueuedAt": datetime(2026, 11, 27, 12, 5),
              "FinishedAt": None, "RequestedBy": "john.doe@example.com",
              "Payload": json.dumps({"bug_id": 3, "hint": "add <libgdiplus> for Contoso"}),
@@ -416,10 +416,10 @@ def test_tries_on_the_page_and_in_the_export():
                         r"SELECT BugId, Status, Note, Labels, CreatedAt, DataGz": [
                             {"BugId": 3, "Status": "open", "Note": "", "CreatedAt": datetime(2026, 11, 27, 12, 0),
                              "DataGz": gzip.compress(json.dumps(case).encode())}],
-                        r"FROM cz.BugReport b JOIN cz.Application": [
+                        r"FROM cz.BugReport b JOIN cz.vApplicationLatest": [
                             {"BugId": 3, "ApplicationId": 7, "AssessmentId": 70, "App": "shop", "Component": "Api",
                              "DataGz": gzip.compress(json.dumps(case).encode()), "RepositoryUrl": "https://example.com/r",
-                             "SourcePath": None, "SourceKey": "k", "SourceCommit": "a" * 40}],
+                             "SourcePath": None}],
                         r"FROM cz.OrgRepository": [{"ScanId": 4, "AppName": "shop"}],
                         r"EXEC cz.QueueLlmJob": [{"JobId": 31}]}
     a = adm.sessions.create("a@example.com", "A", True)

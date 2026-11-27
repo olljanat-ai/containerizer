@@ -228,6 +228,9 @@ without a file) is refused at once, with that reason. It runs on request only:
 product owners, with the queue's estimate), or **Make it A: every B application** for administrators (below). A scan
 never orders one by itself.
 
+When Make it A does not get an application to A, [Working through B-rated applications](bug-reports.md#working-through-b-rated-applications)
+says what to try next and how to decide what it is.
+
 Keeping its own data does not make an application B: it rates A, marked stateful, and the organization scan
 deploys it as it is with its data on a persistent volume and one replica
 ([Application data on persistent volumes](overview.md#application-data-on-persistent-volumes)). Make it A moves
