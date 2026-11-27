@@ -3194,13 +3194,29 @@ def handler(job: dict) -> dict:
                 result["heavy"] = heavy_next(job, pl, result, ends, work)
         elif ends:
             result["heavy"] = heavy_next_fix(job, pl, result, ends)
+        snapshot = code_snapshot(pl, result, work)
     finally:
         if not os.environ.get("CONTAINERIZER_KEEP_REFACTOR_WORK"):
             shutil.rmtree(work, ignore_errors=True)
     note = None
     if result["status"] == "applies-only":
         note = "the patch applies; " + (result.get("reason") or "it was not verified")
-    return {"result": result, "summary": summary(result), "note": note[:400] if note else None}
+    return {"result": result, "summary": summary(result), "note": note[:400] if note else None, "snapshot": snapshot}
+
+
+def code_snapshot(pl: dict, result: dict, work: Path) -> bytes | None:
+    """The order's code browser snapshot (codebrowse.py): the application's files at the commit and with the patch.
+    None without a patch, or when it cannot be made (the order does not fail for it)."""
+    if not result.get("patch") or result.get("status") not in ("verified", "applies-only"):
+        return None
+    try:
+        from . import codebrowse
+        patch = base64.b64decode(result["patch_b64"]) if result.get("patch_b64") else result["patch"].encode("utf-8")
+        repo, app = checkout(pl["source"], result.get("commit") or pl.get("commit"), work / "browse")
+        ok, _ = apply_patch(repo, patch)
+        return codebrowse.build(repo, app) if ok else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # --------------------------------------------------------------------------- queueing

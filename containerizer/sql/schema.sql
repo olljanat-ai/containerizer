@@ -3615,3 +3615,22 @@ END;
 GO
 IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 63) INSERT [${schema}].SchemaVersion (Version) VALUES (63);
 GO
+
+-- 64: the code browser of a refactoring order (codebrowse.py): the application's files at the assessed commit and
+-- with the patch, a zip in parts of 512 KiB. The queue runner writes it and keeps the newest three per
+-- application; the admin site reads it. Source code: no audit rows, never in the change history.
+IF OBJECT_ID(N'[${schema}].LlmJobSource', N'U') IS NULL
+CREATE TABLE [${schema}].LlmJobSource (
+    JobId         bigint         NOT NULL,
+    Seq           int            NOT NULL,
+    ApplicationId int            NULL,
+    Data          varbinary(max) NOT NULL,
+    CreatedAt     datetime2(0)   NOT NULL CONSTRAINT DF_LlmJobSource_CreatedAt DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT PK_LlmJobSource PRIMARY KEY (JobId, Seq)
+);
+GO
+GRANT SELECT, INSERT, DELETE ON [${schema}].LlmJobSource TO [${schema}_writer];
+GRANT SELECT ON [${schema}].LlmJobSource TO [${schema}_admin];
+GO
+IF NOT EXISTS (SELECT 1 FROM [${schema}].SchemaVersion WHERE Version = 64) INSERT [${schema}].SchemaVersion (Version) VALUES (64);
+GO
